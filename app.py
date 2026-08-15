@@ -63,7 +63,8 @@ def clean_text(text):
 
 def fetch_single_image(prompt_text, index):
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
-    time.sleep(index * 0.4)
+    # Stagger requests slightly longer to prevent rate limiting on 5+ images
+    time.sleep(index * 0.8)
     
     seed = random.randint(1000, 999999)
     encoded_prompt = urllib.parse.quote(clean_prompt.strip())
@@ -74,15 +75,15 @@ def fetch_single_image(prompt_text, index):
         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     )
     
-    for _ in range(2):
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                image_data = response.read()
-                if len(image_data) > 2000:
-                    return f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
-        except Exception:
-            time.sleep(0.5)
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            image_data = response.read()
+            if len(image_data) > 2000:
+                return f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
+    except Exception:
+        pass
             
+    # Always return direct URL if base64 download hits timeout
     return direct_url
 
 def generate_speech(text):
@@ -125,7 +126,7 @@ def build_html_export(title, audience, character_design, scenes):
     for s in scenes:
         html_content += f"""
     <div class="scene">
-        ### Scene {s['scene_number']}
+        <h3>Scene {s['scene_number']}</h3>
         <p><strong>Action:</strong> {clean_text(s['action_description'])}</p>
         <p><span class="speaker">{clean_text(s['character_speaking'])}:</span> "{clean_text(s['dialogue'])}"</p>
     </div>
@@ -142,7 +143,6 @@ if st.button("Spark Story 🚀", type="primary"):
             active_key = api_key if api_key else secret_key
             client = genai.Client(api_key=active_key) if active_key else genai.Client()
 
-            # Check if user explicitly outlined scene count in text
             user_scene_matches = re.findall(r'scene\s*\d+', user_concept, re.IGNORECASE)
             target_count = len(set(user_scene_matches)) if len(set(user_scene_matches)) >= 3 else num_scenes
 
@@ -182,6 +182,7 @@ if st.button("Spark Story 🚀", type="primary"):
             
             image_sources = []
             for idx, p in enumerate(prompts):
+                story_status.write(f"🎨 Fetching scene {idx+1} image...")
                 image_sources.append(fetch_single_image(p, idx))
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
