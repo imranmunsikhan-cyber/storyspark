@@ -21,7 +21,7 @@ class Scene(BaseModel):
     scene_number: int
     character_speaking: str = Field(description="Name of the character speaking")
     dialogue: str = Field(description="The spoken dialogue")
-    image_prompt: str = Field(description="Detailed visual prompt including consistent character design")
+    image_prompt: str = Field(description="Detailed visual prompt highlighting the background setting, environment elements, and character actions")
     action_description: str = Field(description="Brief explanation of scene action")
 
 class AnimationStoryboard(BaseModel):
@@ -37,7 +37,7 @@ with st.sidebar:
     api_key = st.text_input("Gemini API Key", value=secret_key, type="password")
     
     st.subheader("⚙️ Storyboard Controls")
-    num_scenes = st.slider("Number of Scenes:", min_value=3, max_value=6, value=3)
+    num_scenes = st.slider("Number of Scenes (if not specified in text):", min_value=3, max_value=6, value=5)
     
     st.subheader("🎨 Art Style Settings")
     art_style = st.selectbox(
@@ -48,16 +48,15 @@ with st.sidebar:
 
 user_concept = st.text_area(
     "What is your story idea?",
-    placeholder="e.g., A friendly robot learning how to plant sunflowers in an abandoned glass conservatory."
+    height=200,
+    placeholder="Paste your story idea or full scene-by-scene outline here..."
 )
 
 def clean_text(text):
     if not text:
         return ""
     text = str(text)
-    replacements = {
-        '“': '"', '”': '"', '‘': "'", '’': "'", '—': '-', '–': '-', '…': '...'
-    }
+    replacements = {'“': '"', '”': '"', '‘': "'", '’': "'", '—': '-', '–': '-', '…': '...'}
     for k, v in replacements.items():
         text = text.replace(k, v)
     return text.encode('ascii', 'ignore').decode('ascii')
@@ -126,7 +125,7 @@ def build_html_export(title, audience, character_design, scenes):
     for s in scenes:
         html_content += f"""
     <div class="scene">
-        <h3>Scene {s['scene_number']}</h3>
+        ### Scene {s['scene_number']}
         <p><strong>Action:</strong> {clean_text(s['action_description'])}</p>
         <p><span class="speaker">{clean_text(s['character_speaking'])}:</span> "{clean_text(s['dialogue'])}"</p>
     </div>
@@ -143,16 +142,22 @@ if st.button("Spark Story 🚀", type="primary"):
             active_key = api_key if api_key else secret_key
             client = genai.Client(api_key=active_key) if active_key else genai.Client()
 
+            # Check if user explicitly outlined scene count in text
+            user_scene_matches = re.findall(r'scene\s*\d+', user_concept, re.IGNORECASE)
+            target_count = len(set(user_scene_matches)) if len(set(user_scene_matches)) >= 3 else num_scenes
+
             fallback_models = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
             response = None
             used_model = ""
 
             for model_name in fallback_models:
                 try:
-                    story_status.write(f"🧠 Drafting {num_scenes}-scene script ({model_name})...")
+                    story_status.write(f"🧠 Drafting {target_count}-scene script ({model_name})...")
                     prompt_query = (
-                        f"Create EXACTLY {num_scenes} scenes in the storyboard for: {user_concept}. "
-                        f"Aesthetic target: {art_style}. Include static key features from main_character_design in each scene's image_prompt."
+                        f"If the user input contains a multi-scene breakdown (e.g., Scene 1, Scene 2...), follow that EXACT scene outline, setting, action, and scene count strictly. "
+                        f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
+                        f"Aesthetic target: {art_style}.\n"
+                        f"CRITICAL FOR IMAGES: In every scene's image_prompt, describe the full environment/setting background clearly (e.g., hospital room, dusty attic, cafeteria) along with character actions, so images show the complete scene instead of just close-up portraits."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -173,7 +178,7 @@ if st.button("Spark Story 🚀", type="primary"):
             data = json.loads(response.text)
 
             story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes ({art_style})...")
-            prompts = [f"{s['image_prompt']}, in style of {art_style}" for s in data["scenes"]]
+            prompts = [f"{s['image_prompt']}, detailed environment background, widescreen cinematic composition, in style of {art_style}" for s in data["scenes"]]
             
             image_sources = []
             for idx, p in enumerate(prompts):
@@ -186,8 +191,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.subheader("🎬 Storyboard Scenes")
             
-            num_cols = 3 if len(data["scenes"]) >= 3 else len(data["scenes"])
-            
+            num_cols = 3
             for i in range(0, len(data["scenes"]), num_cols):
                 cols = st.columns(num_cols)
                 scene_group = data["scenes"][i:i+num_cols]
