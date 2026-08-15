@@ -28,7 +28,7 @@ class Scene(BaseModel):
 class AnimationStoryboard(BaseModel):
     title: str
     target_audience: str
-    main_character_design: str = Field(description="Detailed master description of the main character's visual design for consistency")
+    main_character_design: str = Field(description="Detailed master description of the main character visual design")
     scenes: list[Scene]
 
 secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -86,32 +86,35 @@ def generate_speech(text):
     except Exception:
         return None
 
+def sanitize_text(txt):
+    return str(txt).encode('ascii', 'replace').decode('ascii')
+
 def create_pdf(title, audience, character_design, scenes):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.multi_cell(0, 8, sanitize_text(title), align="C")
     
-    pdf.set_font("Helvetica", "I", 11)
-    pdf.cell(0, 8, f"Target Audience: {audience}".encode('latin-1', 'replace').decode('latin-1'), new_x="LMARGIN", new_y="NEXT", align="C")
-    pdf.ln(5)
+    pdf.set_font("Helvetica", "I", 10)
+    pdf.multi_cell(0, 6, f"Target Audience: {sanitize_text(audience)}", align="C")
+    pdf.ln(4)
     
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 7, "Master Character Design:", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, character_design.encode('latin-1', 'replace').decode('latin-1'))
-    pdf.ln(8)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.multi_cell(0, 6, "Master Character Design:")
+    pdf.set_font("Helvetica", "", 9)
+    pdf.multi_cell(0, 5, sanitize_text(character_design))
+    pdf.ln(6)
     
     for scene in scenes:
-        pdf.set_font("Helvetica", "B", 13)
-        pdf.cell(0, 8, f"Scene {scene['scene_number']}", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.multi_cell(0, 6, f"Scene {scene['scene_number']}")
         
-        pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 5, f"Action: {scene['action_description']}".encode('latin-1', 'replace').decode('latin-1'))
-        pdf.multi_cell(0, 5, f"Speaker ({scene['character_speaking']}): \"{scene['dialogue']}\"".encode('latin-1', 'replace').decode('latin-1'))
-        pdf.ln(5)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.multi_cell(0, 5, f"Action: {sanitize_text(scene['action_description'])}")
+        pdf.multi_cell(0, 5, f"Speaker ({sanitize_text(scene['character_speaking'])}): \"{sanitize_text(scene['dialogue'])}\"")
+        pdf.ln(4)
         
     pdf_output = BytesIO()
     pdf.output(pdf_output)
@@ -135,9 +138,8 @@ if st.button("Spark Story 🚀", type="primary"):
                 try:
                     story_status.write(f"🧠 Drafting {num_scenes}-scene script ({model_name})...")
                     prompt_query = (
-                        f"Create a {num_scenes}-scene animation storyboard for: {user_concept}. "
-                        f"Aesthetic target: {art_style}. Ensure the main character has a clear, static visual feature set defined in main_character_design, "
-                        f"and include those specific key visual features in every scene's image_prompt for visual consistency."
+                        f"Create EXACTLY {num_scenes} scenes in the storyboard for: {user_concept}. "
+                        f"Aesthetic target: {art_style}. Include static key features from main_character_design in each scene's image_prompt."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -157,33 +159,40 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {num_scenes} consistent visual scenes ({art_style})...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes ({art_style})...")
             prompts = [f"{s['image_prompt']}, in style of {art_style}" for s in data["scenes"]]
             
             image_sources = []
             for idx, p in enumerate(prompts):
                 image_sources.append(fetch_single_image(p, idx))
 
-            st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Model: {used_model}")
+            st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
             
             with st.expander("👤 Master Character Visual Design"):
                 st.write(data["main_character_design"])
 
             st.subheader("🎬 Storyboard Scenes")
-            cols = st.columns(len(data["scenes"]))
+            
+            # Responsive layout grid (3 columns per row)
+            num_cols = 3 if len(data["scenes"]) >= 3 else len(data["scenes"])
+            
+            for i in range(0, len(data["scenes"]), num_cols):
+                cols = st.columns(num_cols)
+                scene_group = data["scenes"][i:i+num_cols]
+                
+                for idx, scene in enumerate(scene_group):
+                    global_idx = i + idx
+                    with cols[idx]:
+                        st.markdown(f"### Scene {scene['scene_number']}")
+                        st.write(f"**Action:** {scene['action_description']}")
+                        st.write(f"🗣️ **{scene['character_speaking']}:** \"{scene['dialogue']}\"")
+                        
+                        if enable_audio and scene['dialogue']:
+                            audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
+                            if audio_fp:
+                                st.audio(audio_fp, format='audio/mp3')
 
-            for idx, scene in enumerate(data["scenes"]):
-                with cols[idx]:
-                    st.markdown(f"### Scene {scene['scene_number']}")
-                    st.write(f"**Action:** {scene['action_description']}")
-                    st.write(f"🗣️ **{scene['character_speaking']}:** \"{scene['dialogue']}\"")
-                    
-                    if enable_audio and scene['dialogue']:
-                        audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
-                        if audio_fp:
-                            st.audio(audio_fp, format='audio/mp3')
-
-                    st.image(image_sources[idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
+                        st.image(image_sources[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
             pdf_file = create_pdf(data["title"], data["target_audience"], data["main_character_design"], data["scenes"])
             st.download_button(
