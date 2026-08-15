@@ -11,7 +11,6 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from gtts import gTTS
-from fpdf import FPDF
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
@@ -52,6 +51,17 @@ user_concept = st.text_area(
     placeholder="e.g., A friendly robot learning how to plant sunflowers in an abandoned glass conservatory."
 )
 
+def clean_text(text):
+    if not text:
+        return ""
+    text = str(text)
+    replacements = {
+        '“': '"', '”': '"', '‘': "'", '’': "'", '—': '-', '–': '-', '…': '...'
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text.encode('ascii', 'ignore').decode('ascii')
+
 def fetch_single_image(prompt_text, index):
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
     time.sleep(index * 0.4)
@@ -78,7 +88,10 @@ def fetch_single_image(prompt_text, index):
 
 def generate_speech(text):
     try:
-        tts = gTTS(text=text, lang='en', slow=False)
+        safe_speech_text = clean_text(text)
+        if not safe_speech_text.strip():
+            return None
+        tts = gTTS(text=safe_speech_text, lang='en', slow=False)
         fp = BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)
@@ -86,40 +99,40 @@ def generate_speech(text):
     except Exception:
         return None
 
-def sanitize_text(txt):
-    return str(txt).encode('ascii', 'replace').decode('ascii')
-
-def create_pdf(title, audience, character_design, scenes):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.multi_cell(0, 8, sanitize_text(title), align="C")
-    
-    pdf.set_font("Helvetica", "I", 10)
-    pdf.multi_cell(0, 6, f"Target Audience: {sanitize_text(audience)}", align="C")
-    pdf.ln(4)
-    
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.multi_cell(0, 6, "Master Character Design:")
-    pdf.set_font("Helvetica", "", 9)
-    pdf.multi_cell(0, 5, sanitize_text(character_design))
-    pdf.ln(6)
-    
-    for scene in scenes:
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.multi_cell(0, 6, f"Scene {scene['scene_number']}")
-        
-        pdf.set_font("Helvetica", "", 9)
-        pdf.multi_cell(0, 5, f"Action: {sanitize_text(scene['action_description'])}")
-        pdf.multi_cell(0, 5, f"Speaker ({sanitize_text(scene['character_speaking'])}): \"{sanitize_text(scene['dialogue'])}\"")
-        pdf.ln(4)
-        
-    pdf_output = BytesIO()
-    pdf.output(pdf_output)
-    pdf_output.seek(0)
-    return pdf_output
+def build_html_export(title, audience, character_design, scenes):
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{clean_text(title)}</title>
+<style>
+    body {{ font-family: Arial, sans-serif; margin: 30px; line-height: 1.5; color: #222; }}
+    h1 {{ color: #111; text-align: center; }}
+    .meta {{ text-align: center; color: #555; font-style: italic; margin-bottom: 20px; }}
+    .box {{ background: #f4f4f5; padding: 15px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ff4b4b; }}
+    .scene {{ margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #ddd; }}
+    .speaker {{ font-weight: bold; color: #0066cc; }}
+</style>
+</head>
+<body>
+    <h1>{clean_text(title)}</h1>
+    <div class="meta">Target Audience: {clean_text(audience)}</div>
+    <div class="box">
+        <strong>Master Character Design:</strong><br>
+        {clean_text(character_design)}
+    </div>
+    <h2>Storyboard Scenes</h2>
+"""
+    for s in scenes:
+        html_content += f"""
+    <div class="scene">
+        <h3>Scene {s['scene_number']}</h3>
+        <p><strong>Action:</strong> {clean_text(s['action_description'])}</p>
+        <p><span class="speaker">{clean_text(s['character_speaking'])}:</span> "{clean_text(s['dialogue'])}"</p>
+    </div>
+"""
+    html_content += "</body></html>"
+    return html_content.encode('utf-8')
 
 if st.button("Spark Story 🚀", type="primary"):
     if not user_concept:
@@ -173,7 +186,6 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.subheader("🎬 Storyboard Scenes")
             
-            # Responsive layout grid (3 columns per row)
             num_cols = 3 if len(data["scenes"]) >= 3 else len(data["scenes"])
             
             for i in range(0, len(data["scenes"]), num_cols):
@@ -194,12 +206,12 @@ if st.button("Spark Story 🚀", type="primary"):
 
                         st.image(image_sources[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
-            pdf_file = create_pdf(data["title"], data["target_audience"], data["main_character_design"], data["scenes"])
+            html_data = build_html_export(data["title"], data["target_audience"], data["main_character_design"], data["scenes"])
             st.download_button(
-                label="📄 Download Storyboard PDF",
-                data=pdf_file,
-                file_name=f"{data['title'].lower().replace(' ', '_')}_storyboard.pdf",
-                mime="application/pdf"
+                label="📄 Export Storyboard (HTML/Print)",
+                data=html_data,
+                file_name=f"{clean_text(data['title']).lower().replace(' ', '_')}_storyboard.html",
+                mime="text/html"
             )
 
             story_status.update(label="Storyboard Complete!", state="complete", expanded=False)
