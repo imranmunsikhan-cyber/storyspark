@@ -5,7 +5,6 @@ import random
 import time
 import urllib.parse
 import urllib.request
-import concurrent.futures
 from io import BytesIO
 import streamlit as st
 from google import genai
@@ -48,29 +47,30 @@ user_concept = st.text_area(
     placeholder="e.g., A friendly robot learning how to plant sunflowers in an abandoned glass conservatory."
 )
 
-def fetch_single_image(prompt_text):
+def fetch_single_image(prompt_text, index):
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
+    # Stagger requests to bypass rate-limiting
+    time.sleep(index * 0.4)
     
-    # Try multiple random seeds & retries to prevent dropped images
-    for attempt in range(3):
-        seed = random.randint(1, 999999)
-        encoded_prompt = urllib.parse.quote(clean_prompt.strip())
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true&seed={seed}"
-        
-        req = urllib.request.Request(
-            url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
+    seed = random.randint(1000, 999999)
+    encoded_prompt = urllib.parse.quote(clean_prompt.strip())
+    direct_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true&seed={seed}"
+    
+    req = urllib.request.Request(
+        direct_url, 
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    )
+    
+    for _ in range(2):
         try:
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=10) as response:
                 image_data = response.read()
-                if len(image_data) > 1000:
+                if len(image_data) > 2000:
                     return f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
         except Exception:
             time.sleep(0.5)
             
-    # Fallback to direct URL if base64 fails
-    return f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt)}?width=800&height=500&nologo=true"
+    return direct_url
 
 def generate_speech(text):
     try:
@@ -118,8 +118,11 @@ if st.button("Spark Story 🚀", type="primary"):
 
             story_status.write(f"🎨 Rendering scene images ({art_style})...")
             prompts = [f"{s['image_prompt']}, in style of {art_style}" for s in data["scenes"]]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                image_sources = list(executor.map(fetch_single_image, prompts))
+            
+            # Staggered image fetching loop
+            image_sources = []
+            for idx, p in enumerate(prompts):
+                image_sources.append(fetch_single_image(p, idx))
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Model: {used_model}")
             st.subheader("🎬 Storyboard Scenes")
