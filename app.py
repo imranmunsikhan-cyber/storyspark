@@ -4,15 +4,17 @@ import base64
 import urllib.parse
 import urllib.request
 import concurrent.futures
+from io import BytesIO
 import streamlit as st
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from gtts import gTTS
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Turn your simple ideas into animated scene storyboards with custom visual styles.")
+st.caption("Turn your simple ideas into animated scene storyboards with AI visuals & voice narration.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -26,20 +28,22 @@ class AnimationStoryboard(BaseModel):
     target_audience: str
     scenes: list[Scene]
 
+secret_key = st.secrets.get("GEMINI_API_KEY", "")
+
 with st.sidebar:
     st.header("Settings")
-    api_key = st.text_input("Gemini API Key", type="password")
+    api_key = st.text_input("Gemini API Key", value=secret_key, type="password")
     
     st.subheader("🎨 Art Style Settings")
     art_style = st.selectbox(
         "Choose Animation Style:",
         ["Vibrant Pixar 3D", "Classic Anime / Studio Ghibli", "Papercraft / Claymation", "Retro Comic Book", "Photorealistic Cinematic"]
     )
-    st.info("💡 API models and image generation remain 100% free.")
+    enable_audio = st.checkbox("Generate Voice Narration 🎙️", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
-    placeholder="e.g., A young red fox sitting in a snowy forest clearing at dawn."
+    placeholder="e.g., A friendly robot learning how to plant sunflowers in an abandoned glass conservatory."
 )
 
 def fetch_single_image(prompt_text):
@@ -51,7 +55,6 @@ def fetch_single_image(prompt_text):
         url, 
         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     )
-    
     try:
         with urllib.request.urlopen(req, timeout=12) as response:
             image_data = response.read()
@@ -59,16 +62,24 @@ def fetch_single_image(prompt_text):
     except Exception:
         return url
 
+def generate_speech(text):
+    try:
+        tts = gTTS(text=text, lang='en', slow=False)
+        fp = BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return fp
+    except Exception:
+        return None
+
 if st.button("Spark Story 🚀", type="primary"):
     if not user_concept:
         st.warning("Please enter a story idea first!")
     else:
-        story_status = st.status("Thinking...", expanded=True)
+        story_status = st.status("Sparking creativity...", expanded=True)
         try:
-            if api_key:
-                client = genai.Client(api_key=api_key)
-            else:
-                client = genai.Client()
+            active_key = api_key if api_key else secret_key
+            client = genai.Client(api_key=active_key) if active_key else genai.Client()
 
             fallback_models = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
             response = None
@@ -76,7 +87,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             for model_name in fallback_models:
                 try:
-                    story_status.write(f"🧠 Consulting Gemini ({model_name})...")
+                    story_status.write(f"🧠 Drafting script ({model_name})...")
                     response = client.models.generate_content(
                         model=model_name,
                         contents=f"Create a 3-scene animation storyboard for: {user_concept}. Aesthetic target: {art_style}.",
@@ -87,22 +98,20 @@ if st.button("Spark Story 🚀", type="primary"):
                     )
                     used_model = model_name
                     break
-                except Exception as model_err:
-                    story_status.write(f"⚠️ {model_name} busy, retrying fallback...")
+                except Exception:
                     continue
 
             if not response:
-                raise Exception("Gemini endpoints busy. Please retry.")
+                raise Exception("All Gemini endpoints were busy. Please try again.")
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering images in parallel ({art_style})...")
-            
+            story_status.write(f"🎨 Rendering scene images ({art_style})...")
             prompts = [f"{s['image_prompt']}, in style of {art_style}" for s in data["scenes"]]
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 image_sources = list(executor.map(fetch_single_image, prompts))
 
-            st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Style: {art_style}")
+            st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Model: {used_model}")
             st.subheader("🎬 Storyboard Scenes")
             cols = st.columns(len(data["scenes"]))
 
@@ -112,10 +121,12 @@ if st.button("Spark Story 🚀", type="primary"):
                     st.write(f"**Action:** {scene['action_description']}")
                     st.write(f"🗣️ **{scene['character_speaking']}:** \"{scene['dialogue']}\"")
                     
+                    if enable_audio and scene['dialogue']:
+                        audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
+                        if audio_fp:
+                            st.audio(audio_fp, format='audio/mp3')
+
                     st.image(image_sources[idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
-                    
-                    with st.expander("Show Raw Image Prompt"):
-                        st.caption(f"🎨: {scene['image_prompt']}")
 
             story_status.update(label="Storyboard Complete!", state="complete", expanded=False)
 
