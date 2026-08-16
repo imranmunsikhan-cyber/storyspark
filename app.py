@@ -32,20 +32,20 @@ except ImportError:
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI Engine")
-st.caption("ToonBees-Style Animation Studio: Enforced Visual Quality, Character Blueprint & Audio Mixing.")
+st.caption("ToonBees-Style Animation Studio: Enforced Motion Video, Character Blueprint & Audio Mixing.")
 
 class Scene(BaseModel):
     scene_number: int
     character_speaking: str = Field(description="Name of the character speaking or Narrator")
     dialogue: str = Field(description="Spoken dialogue or narrative commentary.")
-    image_prompt: str = Field(description="Detailed visual prompt depicting background setting, character actions, and environmental details.")
+    image_prompt: str = Field(description="Detailed visual prompt depicting background setting and action.")
     action_description: str = Field(description="Brief explanation of scene action")
 
 class AnimationStoryboard(BaseModel):
     title: str
     target_audience: str
-    main_character_name: str = Field(description="Name of the primary character")
-    main_character_design: str = Field(description="Detailed physical traits (hair, clothes, colors) of the main character to enforce visual consistency.")
+    main_character_name: str = Field(description="Name of primary character")
+    main_character_design: str = Field(description="Detailed physical traits of the main character")
     scenes: list[Scene]
 
 secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -108,29 +108,15 @@ def clean_text(text):
 
 def fetch_single_image(args):
     prompt_text, index = args
-    # Clean text to prevent bad URL escaping in image engine
     clean_p = re.sub(r'[^a-zA-Z0-9\s,-]', '', prompt_text)
-    clean_p = ' '.join(clean_p.split())[:300]
-    
+    clean_p = ' '.join(clean_p.split())[:200]
     seed = random.randint(1000, 99999)
     
-    # Target high-quality generation endpoint directly
-    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}&model=flux"
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}"
     
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=15) as response:
-            img_bytes = response.read()
-            if len(img_bytes) > 5000:
-                return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
-    except Exception:
-        pass
-
-    # Fallback to standard endpoint if flux engine times out
-    try:
-        fallback_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}"
-        req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=12) as response:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=20) as response:
             img_bytes = response.read()
             if len(img_bytes) > 2000:
                 return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
@@ -139,7 +125,7 @@ def fetch_single_image(args):
 
     return None, f"https://via.placeholder.com/{VID_WIDTH}x{VID_HEIGHT}.png?text=Image+Rendering+Issue"
 
-def generate_speech(text, accent_key):
+def generate_speech_file(text, accent_key):
     try:
         safe_speech_text = clean_text(text)
         if not safe_speech_text.strip():
@@ -147,10 +133,10 @@ def generate_speech(text, accent_key):
         
         lang_code, tld = ACCENT_MAP.get(accent_key, ("en", "com"))
         tts = gTTS(text=safe_speech_text, lang=lang_code, tld=tld, slow=False)
-        fp = BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        return fp
+        
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tts.save(temp_audio.name)
+        return temp_audio.name
     except Exception:
         return None
 
@@ -165,7 +151,7 @@ def fetch_bgm_file():
     except Exception:
         return None
 
-def build_motion_video(img_bytes, audio_bytes, subtitle_text="", scene_idx=0):
+def build_motion_video(img_bytes, audio_path, subtitle_text="", scene_idx=0):
     if not ImageClip or not img_bytes:
         return None, None
     try:
@@ -173,13 +159,10 @@ def build_motion_video(img_bytes, audio_bytes, subtitle_text="", scene_idx=0):
             img_file.write(img_bytes)
             img_path = img_file.name
 
-        audio_path = None
         duration = 4.0
-        
-        if audio_bytes:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
-                audio_file.write(audio_bytes.getvalue())
-                audio_path = audio_file.name
+        audio_clip = None
+
+        if audio_path and os.path.exists(audio_path):
             audio_clip = AudioFileClip(audio_path)
             duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
 
@@ -249,7 +232,7 @@ def build_motion_video(img_bytes, audio_bytes, subtitle_text="", scene_idx=0):
             except Exception:
                 pass
 
-        if audio_path and 'audio_clip' in locals():
+        if audio_clip:
             if hasattr(motion_clip, "with_audio"):
                 video_clip = motion_clip.with_audio(audio_clip)
             else:
@@ -262,7 +245,7 @@ def build_motion_video(img_bytes, audio_bytes, subtitle_text="", scene_idx=0):
             output_path, 
             fps=24, 
             codec="libx264", 
-            audio_codec="aac" if audio_path else None, 
+            audio_codec="aac" if audio_clip else None, 
             ffmpeg_params=["-pix_fmt", "yuv420p"],
             logger=None
         )
@@ -349,12 +332,12 @@ if st.button("Spark Story 🚀", type="primary"):
 
             for model_name in fallback_models:
                 try:
-                    story_status.write(f"🧠 Drafting script & scene visuals ({model_name})...")
+                    story_status.write(f"🧠 Drafting script & visual concept ({model_name})...")
                     prompt_query = (
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"REQUIREMENT: Provide concise 'image_prompt' focus primarily on setting, main action, and subject."
+                        f"CRITICAL: Always generate dialogue or spoken narration text for EVERY scene."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -375,12 +358,11 @@ if st.button("Spark Story 🚀", type="primary"):
             char_design = data.get("main_character_design", "")
             char_name = data.get("main_character_name", "Character")
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} art-consistent scenes...")
+            story_status.write(f"🎨 Generating {len(data['scenes'])} scenes and compiling motion video...")
 
-            # Enforce clean visual structure
             prompts = []
             for s in data["scenes"]:
-                scene_p = f"{art_style} digital art of {s['image_prompt']}, depicting {char_name} ({char_design}), high detailed background, vibrant colorful scene"
+                scene_p = f"{art_style} style, {s['image_prompt']}, {char_name} {char_design}, 8k resolution animation"
                 prompts.append(scene_p)
             
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -410,13 +392,13 @@ if st.button("Spark Story 🚀", type="primary"):
                         st.write(f"**Action:** {scene['action_description']}")
                         st.write(f"🗣️ **{speaker}:** \"{speech_text}\"")
                         
-                        audio_fp = None
+                        audio_path = None
                         if enable_audio:
-                            audio_fp = generate_speech(speech_text, voice_accent)
+                            audio_path = generate_speech_file(speech_text, voice_accent)
 
                         video_bytes, temp_file_path = build_motion_video(
                             images_bytes_list[global_idx], 
-                            audio_fp,
+                            audio_path,
                             subtitle_text=speech_text,
                             scene_idx=global_idx
                         )
@@ -427,8 +409,8 @@ if st.button("Spark Story 🚀", type="primary"):
                         if video_bytes:
                             st.video(video_bytes)
                         else:
-                            if audio_fp:
-                                st.audio(audio_fp, format='audio/mp3')
+                            if audio_path and os.path.exists(audio_path):
+                                st.audio(audio_path, format='audio/mp3')
                             st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
             if len(scene_temp_files) > 1:
