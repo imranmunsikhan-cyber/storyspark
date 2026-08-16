@@ -16,30 +16,17 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+    from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
     except ImportError:
-        ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips = None, None, None, None, None
+        ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, vfx = None, None, None, None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
-st.markdown("""
-<style>
-    .stVideo video {
-        animation: kenburns 8s ease-in-out infinite alternate;
-        border-radius: 8px;
-    }
-    @keyframes kenburns {
-        0% { transform: scale(1.0) translate(0, 0); }
-        100% { transform: scale(1.08) translate(-1%, -1%); }
-    }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("✨ StorySpark AI")
-st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, captions, and full video export.")
+st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, captions, and motion video generation.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -80,7 +67,6 @@ with st.sidebar:
     )
     
     enable_audio = st.checkbox("Generate Voice & Video Clips 🎙️🎬", value=True)
-    enable_subtitles = st.checkbox("Add On-Screen Subtitles 💬", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
@@ -88,7 +74,6 @@ user_concept = st.text_area(
     placeholder="Paste your story idea or full scene-by-scene outline here..."
 )
 
-# Parse dimensions based on aspect ratio toggle
 if "9:16" in aspect_ratio:
     VID_WIDTH, VID_HEIGHT = 720, 1280
 else:
@@ -147,7 +132,7 @@ def generate_speech(text, accent_key):
     except Exception:
         return None
 
-def build_motion_video(img_bytes, audio_bytes, dialogue_text=""):
+def build_motion_video(img_bytes, audio_bytes):
     if not ImageClip or not img_bytes or not audio_bytes:
         return None, None
     try:
@@ -165,14 +150,39 @@ def build_motion_video(img_bytes, audio_bytes, dialogue_text=""):
         duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
 
         if hasattr(base_clip, "with_duration"):
-            video_clip = base_clip.with_duration(duration)
+            clip = base_clip.with_duration(duration)
         else:
-            video_clip = base_clip.set_duration(duration)
+            clip = base_clip.set_duration(duration)
 
-        if hasattr(video_clip, "with_audio"):
-            video_clip = video_clip.with_audio(audio_clip)
+        # Active pixel transformations across time (Ken Burns camera zoom)
+        def zoom_transform(get_frame, t):
+            frame = get_frame(t)
+            # Apply dynamic zoom scaling over time duration
+            scale = 1.0 + 0.15 * (t / duration)
+            h, w, _ = frame.shape
+            nh, nw = int(h / scale), int(w / scale)
+            sy, sx = (h - nh) // 2, (w - nw) // 2
+            cropped = frame[sy:sy+nh, sx:sx+nw]
+            
+            try:
+                import cv2
+                return cv2.resize(cropped, (w, h))
+            except ImportError:
+                from PIL import Image
+                img = Image.fromarray(cropped)
+                return __import__("numpy").array(img.resize((w, h), Image.Resampling.LANCZOS))
+
+        if hasattr(clip, "transform"):
+            motion_clip = clip.transform(zoom_transform)
+        elif hasattr(clip, "fl"):
+            motion_clip = clip.fl(lambda gf, t: zoom_transform(gf, t))
         else:
-            video_clip = video_clip.set_audio(audio_clip)
+            motion_clip = clip
+
+        if hasattr(motion_clip, "with_audio"):
+            video_clip = motion_clip.with_audio(audio_clip)
+        else:
+            video_clip = motion_clip.set_audio(audio_clip)
 
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         video_clip.write_videofile(
@@ -264,7 +274,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} scenes in {aspect_ratio}...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} motion video scenes...")
             prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -275,7 +285,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
-            st.subheader("🎬 Storyboard Scenes")
+            st.subheader("🎬 Storyboard Scenes with Camera Motion")
             
             scene_temp_files = []
             num_cols = 3 if "16:9" in aspect_ratio else 2
@@ -297,8 +307,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
                         video_bytes, temp_file_path = build_motion_video(
                             images_bytes_list[global_idx], 
-                            audio_fp, 
-                            dialogue_text=scene['dialogue'] if enable_subtitles else ""
+                            audio_fp
                         ) if audio_fp and images_bytes_list[global_idx] else (None, None)
                         
                         if temp_file_path:
@@ -311,7 +320,6 @@ if st.button("Spark Story 🚀", type="primary"):
                                 st.audio(audio_fp, format='audio/mp3')
                             st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
-            # Generate Full Downloadable Movie File
             if len(scene_temp_files) > 1:
                 story_status.write("🎞️ Stitching complete movie file...")
                 full_movie_bytes = merge_all_scenes(scene_temp_files)
@@ -326,7 +334,6 @@ if st.button("Spark Story 🚀", type="primary"):
                         type="primary"
                     )
 
-            # Cleanup temp scene files
             for p in scene_temp_files:
                 if os.path.exists(p):
                     os.remove(p)
