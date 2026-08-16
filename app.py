@@ -14,7 +14,15 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from gtts import gTTS
-from moviepy.editor import ImageClip, AudioFileClip
+
+# Compatibility import for MoviePy v1 and v2
+try:
+    from moviepy import ImageClip, AudioFileClip
+except ImportError:
+    try:
+        from moviepy.editor import ImageClip, AudioFileClip
+    except ImportError:
+        ImageClip, AudioFileClip = None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
@@ -69,7 +77,6 @@ def fetch_single_image(args):
     prompt_text, index = args
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
     
-    # Try 2 separate zero-cost image providers to guarantee 100% image load
     providers = [
         f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=800&height=500&nologo=true&seed={random.randint(1000, 99999)}",
         f"https://picsum.photos/seed/{random.randint(1000, 99999)}/800/500"
@@ -101,7 +108,7 @@ def generate_speech(text):
         return None
 
 def create_scene_video(img_bytes, audio_bytes):
-    if not img_bytes or not audio_bytes:
+    if not ImageClip or not img_bytes or not audio_bytes:
         return None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
@@ -113,8 +120,18 @@ def create_scene_video(img_bytes, audio_bytes):
             audio_path = audio_file.name
 
         audio_clip = AudioFileClip(audio_path)
-        video_clip = ImageClip(img_path).set_duration(audio_clip.duration)
-        video_clip = video_clip.set_audio(audio_clip)
+        video_clip = ImageClip(img_path)
+        
+        # Support MoviePy v2 syntax first, fallback to v1
+        if hasattr(video_clip, "with_duration"):
+            video_clip = video_clip.with_duration(audio_clip.duration)
+        else:
+            video_clip = video_clip.set_duration(audio_clip.duration)
+
+        if hasattr(video_clip, "with_audio"):
+            video_clip = video_clip.with_audio(audio_clip)
+        else:
+            video_clip = video_clip.set_audio(audio_clip)
 
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
@@ -122,7 +139,6 @@ def create_scene_video(img_bytes, audio_bytes):
         with open(output_path, "rb") as f:
             video_bytes = f.read()
 
-        # Cleanup temp files
         for p in [img_path, audio_path, output_path]:
             if os.path.exists(p):
                 os.remove(p)
@@ -201,15 +217,14 @@ if st.button("Spark Story 🚀", type="primary"):
                         if enable_audio and scene['dialogue']:
                             audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
 
-                        # Video compiled from image + voice audio
-                        if audio_fp and images_bytes_list[global_idx]:
-                            story_status.write(f"🎞️ Stitching Scene {scene['scene_number']} Video Clip...")
-                            video_data = create_scene_video(images_bytes_list[global_idx], audio_fp)
-                            if video_data:
-                                st.video(video_data)
-                            else:
-                                st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
+                        # Try generating video clip, otherwise fallback to standard image + audio UI
+                        video_data = create_scene_video(images_bytes_list[global_idx], audio_fp) if audio_fp and images_bytes_list[global_idx] else None
+                        
+                        if video_data:
+                            st.video(video_data)
                         else:
+                            if audio_fp:
+                                st.audio(audio_fp, format='audio/mp3')
                             st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
             story_status.update(label="Storyboard & Video Clips Complete!", state="complete", expanded=False)
