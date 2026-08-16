@@ -26,19 +26,19 @@ except ImportError:
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, captions, and motion video generation.")
+st.caption("Fast, free, instant animated storyboards with dynamic camera movement and voiceovers.")
 
 class Scene(BaseModel):
     scene_number: int
     character_speaking: str = Field(description="Name of the character speaking or Narrator")
-    dialogue: str = Field(description="Spoken dialogue or narrative commentary. MUST NOT BE EMPTY.")
+    dialogue: str = Field(description="Spoken dialogue or narrative commentary.")
     image_prompt: str = Field(description="Detailed visual prompt highlighting background setting and character actions")
     action_description: str = Field(description="Brief explanation of scene action")
 
 class AnimationStoryboard(BaseModel):
     title: str
     target_audience: str
-    main_character_design: str = Field(description="Detailed master description of the main character visual design")
+    main_character_design: str = Field(description="Detailed description of main character")
     scenes: list[Scene]
 
 secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -66,7 +66,7 @@ with st.sidebar:
         ["American (en-US)", "British (en-GB)", "Australian (en-AU)", "Indian (en-IN)"]
     )
     
-    enable_audio = st.checkbox("Generate Voice & Video Clips 🎙️🎬", value=True)
+    enable_audio = st.checkbox("Generate Voice & Motion Clips 🎙️🎬", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
@@ -132,7 +132,7 @@ def generate_speech(text, accent_key):
     except Exception:
         return None
 
-def build_motion_video(img_bytes, audio_bytes):
+def build_motion_video(img_bytes, audio_bytes, scene_idx=0):
     if not ImageClip or not img_bytes:
         return None, None
     try:
@@ -157,14 +157,31 @@ def build_motion_video(img_bytes, audio_bytes):
         else:
             clip = base_clip.set_duration(duration)
 
-        def zoom_transform(get_frame, t):
+        motion_mode = scene_idx % 3
+
+        def pan_and_scan_transform(get_frame, t):
             frame = get_frame(t)
-            scale = 1.0 + 0.12 * (t / duration)
             h, w, _ = frame.shape
+            progress = t / duration
+
+            if motion_mode == 0:
+                scale = 1.05 + (0.10 * progress)
+                off_x = int((w * 0.03) * progress)
+                off_y = 0
+            elif motion_mode == 1:
+                scale = 1.15 - (0.08 * progress)
+                off_x = 0
+                off_y = int((h * 0.03) * progress)
+            else:
+                scale = 1.0 + (0.12 * progress)
+                off_x = 0
+                off_y = 0
+
             nh, nw = int(h / scale), int(w / scale)
-            sy, sx = (h - nh) // 2, (w - nw) // 2
+            sy = max(0, min(h - nh, ((h - nh) // 2) + off_y))
+            sx = max(0, min(w - nw, ((w - nw) // 2) + off_x))
             cropped = frame[sy:sy+nh, sx:sx+nw]
-            
+
             try:
                 import cv2
                 return cv2.resize(cropped, (w, h))
@@ -174,9 +191,9 @@ def build_motion_video(img_bytes, audio_bytes):
                 return __import__("numpy").array(img.resize((w, h), Image.Resampling.LANCZOS))
 
         if hasattr(clip, "transform"):
-            motion_clip = clip.transform(zoom_transform)
+            motion_clip = clip.transform(pan_and_scan_transform)
         elif hasattr(clip, "fl"):
-            motion_clip = clip.fl(lambda gf, t: zoom_transform(gf, t))
+            motion_clip = clip.fl(lambda gf, t: pan_and_scan_transform(gf, t))
         else:
             motion_clip = clip
 
@@ -259,7 +276,7 @@ if st.button("Spark Story 🚀", type="primary"):
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL: Always generate dialogue or spoken narration text for EVERY scene. Do not leave dialogue empty."
+                        f"CRITICAL: Always generate dialogue or spoken narration text for EVERY scene."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -278,7 +295,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} motion video scenes with voice...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} scenes with cinematic motion & voice...")
             prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -289,7 +306,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
-            st.subheader("🎬 Storyboard Scenes with Motion Video & Audio")
+            st.subheader("🎬 Storyboard Scenes with Motion & Audio")
             
             scene_temp_files = []
             num_cols = 3 if "16:9" in aspect_ratio else 2
@@ -314,7 +331,8 @@ if st.button("Spark Story 🚀", type="primary"):
 
                         video_bytes, temp_file_path = build_motion_video(
                             images_bytes_list[global_idx], 
-                            audio_fp
+                            audio_fp,
+                            scene_idx=global_idx
                         )
                         
                         if temp_file_path:
