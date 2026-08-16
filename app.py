@@ -25,6 +25,20 @@ except ImportError:
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
+# Inject CSS for smooth Ken Burns camera pan-and-zoom directly on video renders
+st.markdown("""
+<style>
+    .stVideo video {
+        animation: kenburns 8s ease-in-out infinite alternate;
+        border-radius: 8px;
+    }
+    @keyframes kenburns {
+        0% { transform: scale(1.0) translate(0, 0); }
+        100% { transform: scale(1.08) translate(-1%, -1%); }
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("✨ StorySpark AI")
 st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and motion video generation.")
 
@@ -77,9 +91,10 @@ def fetch_single_image(args):
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
     seed = random.randint(1000, 99999)
     
+    # Exact 1280x720 dimension enforcing for clean H.264 encoding
     urls = [
-        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=1000&height=600&nologo=true&seed={seed}",
-        f"https://picsum.photos/seed/{seed}/1000/600"
+        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=1280&height=720&nologo=true&seed={seed}",
+        f"https://picsum.photos/seed/{seed}/1280/720"
     ]
     
     for url in urls:
@@ -92,7 +107,7 @@ def fetch_single_image(args):
         except Exception:
             continue
 
-    return None, "https://via.placeholder.com/1000x600.png?text=Image+Unavailable"
+    return None, "https://via.placeholder.com/1280x720.png?text=Image+Unavailable"
 
 def generate_speech(text):
     try:
@@ -124,21 +139,10 @@ def build_motion_video(img_bytes, audio_bytes):
 
         duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
 
-        # Create camera motion (gentle zoom in)
-        def zoom_func(t):
-            return 1.0 + (0.08 * (t / duration))
-
-        if hasattr(base_clip, "resized"):
-            video_clip = base_clip.resized(zoom_func)
-        elif hasattr(base_clip, "resize"):
-            video_clip = base_clip.resize(zoom_func)
+        if hasattr(base_clip, "with_duration"):
+            video_clip = base_clip.with_duration(duration)
         else:
-            video_clip = base_clip
-
-        if hasattr(video_clip, "with_duration"):
-            video_clip = video_clip.with_duration(duration)
-        else:
-            video_clip = video_clip.set_duration(duration)
+            video_clip = base_clip.set_duration(duration)
 
         if hasattr(video_clip, "with_audio"):
             video_clip = video_clip.with_audio(audio_clip)
@@ -146,12 +150,14 @@ def build_motion_video(img_bytes, audio_bytes):
             video_clip = video_clip.set_audio(audio_clip)
 
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        
+        # Clean 1280x720 encoding with standard H.264 yuv420p color space
         video_clip.write_videofile(
             output_path, 
             fps=24, 
             codec="libx264", 
             audio_codec="aac", 
-            preset="ultrafast",
+            ffmpeg_params=["-pix_fmt", "yuv420p"],
             logger=None
         )
 
@@ -207,7 +213,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} scenes with motion camera...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} crisp video scenes...")
             prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
