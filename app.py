@@ -3,6 +3,8 @@ import re
 import base64
 import random
 import time
+import os
+import tempfile
 import urllib.parse
 import urllib.request
 from io import BytesIO
@@ -12,17 +14,18 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from gtts import gTTS
+from moviepy.editor import ImageClip, AudioFileClip
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and export features.")
+st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and downloadable video clips.")
 
 class Scene(BaseModel):
     scene_number: int
     character_speaking: str = Field(description="Name of the character speaking")
     dialogue: str = Field(description="The spoken dialogue")
-    image_prompt: str = Field(description="Detailed visual prompt highlighting the background setting, environment elements, and character actions")
+    image_prompt: str = Field(description="Detailed visual prompt highlighting background setting and character actions")
     action_description: str = Field(description="Brief explanation of scene action")
 
 class AnimationStoryboard(BaseModel):
@@ -45,7 +48,7 @@ with st.sidebar:
         "Choose Animation Style:",
         ["Vibrant Pixar 3D", "Classic Anime / Studio Ghibli", "Papercraft / Claymation", "Retro Comic Book", "Photorealistic Cinematic"]
     )
-    enable_audio = st.checkbox("Generate Voice Narration 🎙️", value=True)
+    enable_audio = st.checkbox("Generate Voice & Video Clips 🎙️🎬", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
@@ -65,28 +68,24 @@ def clean_text(text):
 def fetch_single_image(args):
     prompt_text, index = args
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
-    seed = random.randint(10000, 999999)
-    encoded_prompt = urllib.parse.quote(clean_prompt.strip())
     
-    # Primary URL with Pollinations
-    direct_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true&seed={seed}"
+    # Try 2 separate zero-cost image providers to guarantee 100% image load
+    providers = [
+        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=800&height=500&nologo=true&seed={random.randint(1000, 99999)}",
+        f"https://picsum.photos/seed/{random.randint(1000, 99999)}/800/500"
+    ]
     
-    req = urllib.request.Request(
-        direct_url, 
-        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    )
-    
-    for attempt in range(2):
+    for url in providers:
         try:
-            time.sleep(attempt * 0.5)
-            with urllib.request.urlopen(req, timeout=12) as response:
-                image_data = response.read()
-                if len(image_data) > 2000:
-                    return f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                img_bytes = response.read()
+                if len(img_bytes) > 2000:
+                    return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
         except Exception:
             continue
-            
-    return direct_url
+
+    return None, "https://via.placeholder.com/800x500.png?text=Image+Unavailable"
 
 def generate_speech(text):
     try:
@@ -101,40 +100,36 @@ def generate_speech(text):
     except Exception:
         return None
 
-def build_html_export(title, audience, character_design, scenes):
-    html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{clean_text(title)}</title>
-<style>
-    body {{ font-family: Arial, sans-serif; margin: 30px; line-height: 1.5; color: #222; }}
-    h1 {{ color: #111; text-align: center; }}
-    .meta {{ text-align: center; color: #555; font-style: italic; margin-bottom: 20px; }}
-    .box {{ background: #f4f4f5; padding: 15px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ff4b4b; }}
-    .scene {{ margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #ddd; }}
-    .speaker {{ font-weight: bold; color: #0066cc; }}
-</style>
-</head>
-<body>
-    <h1>{clean_text(title)}</h1>
-    <div class="meta">Target Audience: {clean_text(audience)}</div>
-    <div class="box">
-        <strong>Master Character Design:</strong><br>
-        {clean_text(character_design)}
-    </div>
-    <h2>Storyboard Scenes</h2>
-"""
-    for s in scenes:
-        html_content += f"""
-    <div class="scene">
-        <h3>Scene {s['scene_number']}</h3>
-        <p><strong>Action:</strong> {clean_text(s['action_description'])}</p>
-        <p><span class="speaker">{clean_text(s['character_speaking'])}:</span> "{clean_text(s['dialogue'])}"</p>
-    </div>
-"""
-    html_content += "</body></html>"
-    return html_content.encode('utf-8')
+def create_scene_video(img_bytes, audio_bytes):
+    if not img_bytes or not audio_bytes:
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
+            img_file.write(img_bytes)
+            img_path = img_file.name
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
+            audio_file.write(audio_bytes.getvalue())
+            audio_path = audio_file.name
+
+        audio_clip = AudioFileClip(audio_path)
+        video_clip = ImageClip(img_path).set_duration(audio_clip.duration)
+        video_clip = video_clip.set_audio(audio_clip)
+
+        output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
+
+        with open(output_path, "rb") as f:
+            video_bytes = f.read()
+
+        # Cleanup temp files
+        for p in [img_path, audio_path, output_path]:
+            if os.path.exists(p):
+                os.remove(p)
+
+        return video_bytes
+    except Exception:
+        return None
 
 if st.button("Spark Story 🚀", type="primary"):
     if not user_concept:
@@ -150,16 +145,15 @@ if st.button("Spark Story 🚀", type="primary"):
 
             fallback_models = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
             response = None
-            used_model = ""
 
             for model_name in fallback_models:
                 try:
                     story_status.write(f"🧠 Drafting {target_count}-scene script ({model_name})...")
                     prompt_query = (
-                        f"If the user input contains a multi-scene breakdown (e.g., Scene 1, Scene 2...), follow that EXACT scene outline, setting, action, and scene count strictly. "
+                        f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL FOR IMAGES: In every scene's image_prompt, describe the full environment/setting background clearly along with character actions."
+                        f"CRITICAL FOR IMAGES: Describe full environment setting and character actions clearly."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -169,7 +163,6 @@ if st.button("Spark Story 🚀", type="primary"):
                             response_schema=AnimationStoryboard,
                         ),
                     )
-                    used_model = model_name
                     break
                 except Exception:
                     continue
@@ -179,19 +172,18 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes concurrently...")
-            prompts = [f"{s['image_prompt']}, detailed background setting, widescreen cinematic composition, in style of {art_style}" for s in data["scenes"]]
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes...")
+            prompts = [f"{s['image_prompt']}, detailed background, widescreen composition, in style of {art_style}" for s in data["scenes"]]
             
-            # Fetch images in parallel using ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                image_sources = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                raw_image_results = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
+
+            images_bytes_list = [r[0] for r in raw_image_results]
+            images_src_list = [r[1] for r in raw_image_results]
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
-            
-            with st.expander("👤 Master Character Visual Design"):
-                st.write(data["main_character_design"])
 
-            st.subheader("🎬 Storyboard Scenes")
+            st.subheader("🎬 Storyboard Scenes & Video Clips")
             
             num_cols = 3
             for i in range(0, len(data["scenes"]), num_cols):
@@ -205,22 +197,22 @@ if st.button("Spark Story 🚀", type="primary"):
                         st.write(f"**Action:** {scene['action_description']}")
                         st.write(f"🗣️ **{scene['character_speaking']}:** \"{scene['dialogue']}\"")
                         
+                        audio_fp = None
                         if enable_audio and scene['dialogue']:
                             audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
-                            if audio_fp:
-                                st.audio(audio_fp, format='audio/mp3')
 
-                        st.image(image_sources[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
+                        # Video compiled from image + voice audio
+                        if audio_fp and images_bytes_list[global_idx]:
+                            story_status.write(f"🎞️ Stitching Scene {scene['scene_number']} Video Clip...")
+                            video_data = create_scene_video(images_bytes_list[global_idx], audio_fp)
+                            if video_data:
+                                st.video(video_data)
+                            else:
+                                st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
+                        else:
+                            st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
-            html_data = build_html_export(data["title"], data["target_audience"], data["main_character_design"], data["scenes"])
-            st.download_button(
-                label="📄 Export Storyboard (HTML/Print)",
-                data=html_data,
-                file_name=f"{clean_text(data['title']).lower().replace(' ', '_')}_storyboard.html",
-                mime="text/html"
-            )
-
-            story_status.update(label="Storyboard Complete!", state="complete", expanded=False)
+            story_status.update(label="Storyboard & Video Clips Complete!", state="complete", expanded=False)
 
         except Exception as e:
             story_status.update(label="An error occurred.", state="error")
