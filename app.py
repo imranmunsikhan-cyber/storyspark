@@ -16,12 +16,12 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip
+    from moviepy import ImageClip, AudioFileClip, VideoFileClip
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip
+        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip
     except ImportError:
-        ImageClip, AudioFileClip = None, None
+        ImageClip, AudioFileClip, VideoFileClip = None, None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
@@ -46,7 +46,6 @@ secret_key = st.secrets.get("GEMINI_API_KEY", "")
 with st.sidebar:
     st.header("Settings")
     api_key = st.text_input("Gemini API Key", value=secret_key, type="password")
-    hf_token = st.text_input("HuggingFace Free API Token (for AI Motion Video)", type="password")
     
     st.subheader("⚙️ Storyboard Controls")
     num_scenes = st.slider("Number of Scenes (if not specified in text):", min_value=3, max_value=6, value=5)
@@ -73,26 +72,23 @@ def clean_text(text):
         text = text.replace(k, v)
     return text.encode('ascii', 'ignore').decode('ascii')
 
-def fetch_single_image(args):
+def fetch_single_video(args):
     prompt_text, index = args
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
+    seed = random.randint(1000, 99999)
     
-    providers = [
-        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=800&height=500&nologo=true&seed={random.randint(1000, 99999)}",
-        f"https://picsum.photos/seed/{random.randint(1000, 99999)}/800/500"
-    ]
+    # 100% Free AI motion video endpoint via Pollinations
+    video_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=800&height=500&nologo=true&seed={seed}&model=video"
     
-    for url in providers:
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                img_bytes = response.read()
-                if len(img_bytes) > 2000:
-                    return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
-        except Exception:
-            continue
-
-    return None, "https://via.placeholder.com/800x500.png?text=Image+Unavailable"
+    try:
+        req = urllib.request.Request(video_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=25) as response:
+            vid_bytes = response.read()
+            if len(vid_bytes) > 10000:
+                return vid_bytes
+    except Exception:
+        pass
+    return None
 
 def generate_speech(text):
     try:
@@ -107,52 +103,26 @@ def generate_speech(text):
     except Exception:
         return None
 
-def generate_hf_video(img_bytes, prompt, hf_token):
-    if not hf_token or not img_bytes:
+def combine_video_and_audio(raw_video_bytes, audio_bytes):
+    if not raw_video_bytes or not audio_bytes:
         return None
     try:
-        # Use Hugging Face Wan2.1 / LTX-Video Inference API
-        api_url = "https://api-inference.huggingface.co/models/Wan-AI/Wan2.1-I2V-14B-480P"
-        headers = {"Authorization": f"Bearer {hf_token}"}
-        
-        base64_img = base64.b64encode(img_bytes).decode('utf-8')
-        payload = {
-            "inputs": {
-                "image": f"data:image/jpeg;base64,{base64_img}",
-                "prompt": prompt
-            }
-        }
-        
-        req = urllib.request.Request(api_url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return response.read()
-    except Exception:
-        return None
-
-def create_scene_video(img_bytes, audio_bytes, prompt, hf_token):
-    if not img_bytes or not audio_bytes:
-        return None
-    try:
-        # Try Hugging Face dynamic AI Video first if HF Token is provided
-        ai_video_bytes = generate_hf_video(img_bytes, prompt, hf_token) if hf_token else None
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
-            img_file.write(img_bytes)
-            img_path = img_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vid_file:
+            vid_file.write(raw_video_bytes)
+            vid_path = vid_file.name
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
             audio_file.write(audio_bytes.getvalue())
             audio_path = audio_file.name
 
         audio_clip = AudioFileClip(audio_path)
-        
-        if ai_video_bytes:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vid_file:
-                vid_file.write(ai_video_bytes)
-                video_clip_path = vid_file.name
-            video_clip = VideoFileClip(video_clip_path)
-        else:
-            video_clip = ImageClip(img_path)
+        video_clip = VideoFileClip(vid_path)
+
+        # Loop short motion video to match dialogue length
+        if video_clip.duration < audio_clip.duration:
+            loops_needed = int(audio_clip.duration / video_clip.duration) + 1
+            if hasattr(video_clip, "loop"):
+                video_clip = video_clip.loop(n=loops_needed)
 
         if hasattr(video_clip, "with_duration"):
             video_clip = video_clip.with_duration(audio_clip.duration)
@@ -168,13 +138,13 @@ def create_scene_video(img_bytes, audio_bytes, prompt, hf_token):
         video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
 
         with open(output_path, "rb") as f:
-            video_bytes = f.read()
+            result_bytes = f.read()
 
-        for p in [img_path, audio_path, output_path]:
+        for p in [vid_path, audio_path, output_path]:
             if os.path.exists(p):
                 os.remove(p)
 
-        return video_bytes
+        return result_bytes
     except Exception:
         return None
 
@@ -200,7 +170,7 @@ if st.button("Spark Story 🚀", type="primary"):
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL FOR IMAGES: Describe full environment setting and character actions clearly."
+                        f"CRITICAL FOR ANIMATION: Describe physical motion, movements, and actions clearly."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -219,18 +189,15 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes...")
-            prompts = [f"{s['image_prompt']}, detailed background, widescreen composition, in style of {art_style}" for s in data["scenes"]]
+            story_status.write(f"🎬 Rendering {len(data['scenes'])} moving AI videos...")
+            prompts = [f"cinematic moving shot, {s['action_description']}, {s['image_prompt']}, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
-                raw_image_results = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
-
-            images_bytes_list = [r[0] for r in raw_image_results]
-            images_src_list = [r[1] for r in raw_image_results]
+                raw_video_results = list(executor.map(fetch_single_video, [(p, i) for i, p in enumerate(prompts)]))
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
-            st.subheader("🎬 Storyboard Scenes & Dynamic Video Clips")
+            st.subheader("🎬 Storyboard Scenes with Motion Video")
             
             num_cols = 3
             for i in range(0, len(data["scenes"]), num_cols):
@@ -248,21 +215,15 @@ if st.button("Spark Story 🚀", type="primary"):
                         if enable_audio and scene['dialogue']:
                             audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
 
-                        video_data = create_scene_video(
-                            images_bytes_list[global_idx], 
-                            audio_fp, 
-                            scene['action_description'], 
-                            hf_token
-                        ) if audio_fp and images_bytes_list[global_idx] else None
+                        final_video = combine_video_and_audio(raw_video_results[global_idx], audio_fp)
                         
-                        if video_data:
-                            st.video(video_data)
+                        if final_video:
+                            st.video(final_video)
                         else:
                             if audio_fp:
                                 st.audio(audio_fp, format='audio/mp3')
-                            st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
-            story_status.update(label="Storyboard Complete!", state="complete", expanded=False)
+            story_status.update(label="Animated Storyboard Complete!", state="complete", expanded=False)
 
         except Exception as e:
             story_status.update(label="An error occurred.", state="error")
