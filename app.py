@@ -16,17 +16,17 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip, VideoFileClip
+    from moviepy import ImageClip, AudioFileClip
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip
+        from moviepy.editor import ImageClip, AudioFileClip
     except ImportError:
-        ImageClip, AudioFileClip, VideoFileClip = None, None, None
+        ImageClip, AudioFileClip = None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and dynamic video generation.")
+st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and motion video generation.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -72,23 +72,27 @@ def clean_text(text):
         text = text.replace(k, v)
     return text.encode('ascii', 'ignore').decode('ascii')
 
-def fetch_single_video(args):
+def fetch_single_image(args):
     prompt_text, index = args
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
     seed = random.randint(1000, 99999)
     
-    # 100% Free AI motion video endpoint via Pollinations
-    video_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=800&height=500&nologo=true&seed={seed}&model=video"
+    urls = [
+        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=1000&height=600&nologo=true&seed={seed}",
+        f"https://picsum.photos/seed/{seed}/1000/600"
+    ]
     
-    try:
-        req = urllib.request.Request(video_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=25) as response:
-            vid_bytes = response.read()
-            if len(vid_bytes) > 10000:
-                return vid_bytes
-    except Exception:
-        pass
-    return None
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=12) as response:
+                img_bytes = response.read()
+                if len(img_bytes) > 2000:
+                    return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+        except Exception:
+            continue
+
+    return None, "https://via.placeholder.com/1000x600.png?text=Image+Unavailable"
 
 def generate_speech(text):
     try:
@@ -103,31 +107,38 @@ def generate_speech(text):
     except Exception:
         return None
 
-def combine_video_and_audio(raw_video_bytes, audio_bytes):
-    if not raw_video_bytes or not audio_bytes:
+def build_motion_video(img_bytes, audio_bytes):
+    if not ImageClip or not img_bytes or not audio_bytes:
         return None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vid_file:
-            vid_file.write(raw_video_bytes)
-            vid_path = vid_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
+            img_file.write(img_bytes)
+            img_path = img_file.name
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
             audio_file.write(audio_bytes.getvalue())
             audio_path = audio_file.name
 
         audio_clip = AudioFileClip(audio_path)
-        video_clip = VideoFileClip(vid_path)
+        base_clip = ImageClip(img_path)
 
-        # Loop short motion video to match dialogue length
-        if video_clip.duration < audio_clip.duration:
-            loops_needed = int(audio_clip.duration / video_clip.duration) + 1
-            if hasattr(video_clip, "loop"):
-                video_clip = video_clip.loop(n=loops_needed)
+        duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
+
+        # Create camera motion (gentle zoom in)
+        def zoom_func(t):
+            return 1.0 + (0.08 * (t / duration))
+
+        if hasattr(base_clip, "resized"):
+            video_clip = base_clip.resized(zoom_func)
+        elif hasattr(base_clip, "resize"):
+            video_clip = base_clip.resize(zoom_func)
+        else:
+            video_clip = base_clip
 
         if hasattr(video_clip, "with_duration"):
-            video_clip = video_clip.with_duration(audio_clip.duration)
+            video_clip = video_clip.with_duration(duration)
         else:
-            video_clip = video_clip.set_duration(audio_clip.duration)
+            video_clip = video_clip.set_duration(duration)
 
         if hasattr(video_clip, "with_audio"):
             video_clip = video_clip.with_audio(audio_clip)
@@ -135,16 +146,23 @@ def combine_video_and_audio(raw_video_bytes, audio_bytes):
             video_clip = video_clip.set_audio(audio_clip)
 
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-        video_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
+        video_clip.write_videofile(
+            output_path, 
+            fps=24, 
+            codec="libx264", 
+            audio_codec="aac", 
+            preset="ultrafast",
+            logger=None
+        )
 
         with open(output_path, "rb") as f:
-            result_bytes = f.read()
+            video_bytes = f.read()
 
-        for p in [vid_path, audio_path, output_path]:
+        for p in [img_path, audio_path, output_path]:
             if os.path.exists(p):
                 os.remove(p)
 
-        return result_bytes
+        return video_bytes
     except Exception:
         return None
 
@@ -170,7 +188,7 @@ if st.button("Spark Story 🚀", type="primary"):
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL FOR ANIMATION: Describe physical motion, movements, and actions clearly."
+                        f"CRITICAL FOR IMAGES: Describe environment setting and character actions clearly."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -189,11 +207,14 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎬 Rendering {len(data['scenes'])} moving AI videos...")
-            prompts = [f"cinematic moving shot, {s['action_description']}, {s['image_prompt']}, in style of {art_style}" for s in data["scenes"]]
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} scenes with motion camera...")
+            prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
-                raw_video_results = list(executor.map(fetch_single_video, [(p, i) for i, p in enumerate(prompts)]))
+                raw_image_results = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
+
+            images_bytes_list = [r[0] for r in raw_image_results]
+            images_src_list = [r[1] for r in raw_image_results]
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
@@ -215,13 +236,14 @@ if st.button("Spark Story 🚀", type="primary"):
                         if enable_audio and scene['dialogue']:
                             audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
 
-                        final_video = combine_video_and_audio(raw_video_results[global_idx], audio_fp)
+                        video_bytes = build_motion_video(images_bytes_list[global_idx], audio_fp) if audio_fp and images_bytes_list[global_idx] else None
                         
-                        if final_video:
-                            st.video(final_video)
+                        if video_bytes:
+                            st.video(video_bytes)
                         else:
                             if audio_fp:
                                 st.audio(audio_fp, format='audio/mp3')
+                            st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
             story_status.update(label="Animated Storyboard Complete!", state="complete", expanded=False)
 
