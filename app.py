@@ -15,7 +15,6 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from gtts import gTTS
 
-# Compatibility import for MoviePy v1 and v2
 try:
     from moviepy import ImageClip, AudioFileClip
 except ImportError:
@@ -27,7 +26,7 @@ except ImportError:
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and downloadable video clips.")
+st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and dynamic video generation.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -47,6 +46,7 @@ secret_key = st.secrets.get("GEMINI_API_KEY", "")
 with st.sidebar:
     st.header("Settings")
     api_key = st.text_input("Gemini API Key", value=secret_key, type="password")
+    hf_token = st.text_input("HuggingFace Free API Token (for AI Motion Video)", type="password")
     
     st.subheader("⚙️ Storyboard Controls")
     num_scenes = st.slider("Number of Scenes (if not specified in text):", min_value=3, max_value=6, value=5)
@@ -107,10 +107,35 @@ def generate_speech(text):
     except Exception:
         return None
 
-def create_scene_video(img_bytes, audio_bytes):
-    if not ImageClip or not img_bytes or not audio_bytes:
+def generate_hf_video(img_bytes, prompt, hf_token):
+    if not hf_token or not img_bytes:
         return None
     try:
+        # Use Hugging Face Wan2.1 / LTX-Video Inference API
+        api_url = "https://api-inference.huggingface.co/models/Wan-AI/Wan2.1-I2V-14B-480P"
+        headers = {"Authorization": f"Bearer {hf_token}"}
+        
+        base64_img = base64.b64encode(img_bytes).decode('utf-8')
+        payload = {
+            "inputs": {
+                "image": f"data:image/jpeg;base64,{base64_img}",
+                "prompt": prompt
+            }
+        }
+        
+        req = urllib.request.Request(api_url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return response.read()
+    except Exception:
+        return None
+
+def create_scene_video(img_bytes, audio_bytes, prompt, hf_token):
+    if not img_bytes or not audio_bytes:
+        return None
+    try:
+        # Try Hugging Face dynamic AI Video first if HF Token is provided
+        ai_video_bytes = generate_hf_video(img_bytes, prompt, hf_token) if hf_token else None
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
             img_file.write(img_bytes)
             img_path = img_file.name
@@ -120,9 +145,15 @@ def create_scene_video(img_bytes, audio_bytes):
             audio_path = audio_file.name
 
         audio_clip = AudioFileClip(audio_path)
-        video_clip = ImageClip(img_path)
         
-        # Support MoviePy v2 syntax first, fallback to v1
+        if ai_video_bytes:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as vid_file:
+                vid_file.write(ai_video_bytes)
+                video_clip_path = vid_file.name
+            video_clip = VideoFileClip(video_clip_path)
+        else:
+            video_clip = ImageClip(img_path)
+
         if hasattr(video_clip, "with_duration"):
             video_clip = video_clip.with_duration(audio_clip.duration)
         else:
@@ -199,7 +230,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
-            st.subheader("🎬 Storyboard Scenes & Video Clips")
+            st.subheader("🎬 Storyboard Scenes & Dynamic Video Clips")
             
             num_cols = 3
             for i in range(0, len(data["scenes"]), num_cols):
@@ -217,8 +248,12 @@ if st.button("Spark Story 🚀", type="primary"):
                         if enable_audio and scene['dialogue']:
                             audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
 
-                        # Try generating video clip, otherwise fallback to standard image + audio UI
-                        video_data = create_scene_video(images_bytes_list[global_idx], audio_fp) if audio_fp and images_bytes_list[global_idx] else None
+                        video_data = create_scene_video(
+                            images_bytes_list[global_idx], 
+                            audio_fp, 
+                            scene['action_description'], 
+                            hf_token
+                        ) if audio_fp and images_bytes_list[global_idx] else None
                         
                         if video_data:
                             st.video(video_data)
@@ -227,7 +262,7 @@ if st.button("Spark Story 🚀", type="primary"):
                                 st.audio(audio_fp, format='audio/mp3')
                             st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
-            story_status.update(label="Storyboard & Video Clips Complete!", state="complete", expanded=False)
+            story_status.update(label="Storyboard Complete!", state="complete", expanded=False)
 
         except Exception as e:
             story_status.update(label="An error occurred.", state="error")
