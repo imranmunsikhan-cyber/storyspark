@@ -31,20 +31,21 @@ except ImportError:
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
-st.title("✨ StorySpark AI")
-st.caption("ToonBees-Style Automated Animation Engine: Motion, Voice, Subtitles & Background Music.")
+st.title("✨ StorySpark AI Engine")
+st.caption("ToonBees-Style Animation Studio: Enforced Character Consistency, Motion, Voice & BGM.")
 
 class Scene(BaseModel):
     scene_number: int
     character_speaking: str = Field(description="Name of the character speaking or Narrator")
     dialogue: str = Field(description="Spoken dialogue or narrative commentary.")
-    image_prompt: str = Field(description="Detailed visual prompt highlighting background setting and character actions")
+    image_prompt: str = Field(description="Detailed visual prompt highlighting action, framing, and environment")
     action_description: str = Field(description="Brief explanation of scene action")
 
 class AnimationStoryboard(BaseModel):
     title: str
     target_audience: str
-    main_character_design: str = Field(description="Detailed description of main character")
+    main_character_name: str = Field(description="Name of the primary character")
+    main_character_design: str = Field(description="Very detailed physical appearance of main character (colors, clothes, distinct features) to maintain consistency across scenes")
     scenes: list[Scene]
 
 secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -94,7 +95,6 @@ ACCENT_MAP = {
     "Indian (en-IN)": ("en", "co.in")
 }
 
-# Ambient instrumental audio source
 BGM_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
 def clean_text(text):
@@ -338,12 +338,13 @@ if st.button("Spark Story 🚀", type="primary"):
 
             for model_name in fallback_models:
                 try:
-                    story_status.write(f"🧠 Drafting {target_count}-scene script ({model_name})...")
+                    story_status.write(f"🧠 Architecting character blueprint and script ({model_name})...")
                     prompt_query = (
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL: Always generate dialogue or spoken narration text for EVERY scene."
+                        f"CRITICAL REQUIREMENT: Create a hyper-detailed physical description for 'main_character_design' "
+                        f"including exact clothing, color palette, hair style, facial structure, and visual traits."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -361,9 +362,20 @@ if st.button("Spark Story 🚀", type="primary"):
                 raise Exception("All Gemini endpoints were busy. Please try again.")
 
             data = json.loads(response.text)
+            char_design = data.get("main_character_design", "")
+            char_name = data.get("main_character_name", "Main Character")
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} scenes with cinematic motion & voice...")
-            prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} character-consistent scenes with motion...")
+
+            # ENFORCED CONSISTENCY: Every image prompt now fuses the exact character blueprint
+            prompts = []
+            for s in data["scenes"]:
+                scene_p = (
+                    f"Character design reference for {char_name}: {char_design}. "
+                    f"Scene visual: {s['image_prompt']}. "
+                    f"In style of {art_style}, 8k resolution, cinematic lighting, master masterpiece animation style."
+                )
+                prompts.append(scene_p)
             
             with ThreadPoolExecutor(max_workers=2) as executor:
                 raw_image_results = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
@@ -371,7 +383,7 @@ if st.button("Spark Story 🚀", type="primary"):
             images_bytes_list = [r[0] for r in raw_image_results]
             images_src_list = [r[1] for r in raw_image_results]
 
-            st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
+            st.success(f"Storyboard: **{data['title']}** | Character Blueprint: *{char_name} ({char_design[:70]}...)*")
 
             st.subheader("🎬 Storyboard Scenes with Motion & Audio")
             
