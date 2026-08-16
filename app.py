@@ -26,7 +26,7 @@ except ImportError:
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Fast, free, instant animated storyboards with dynamic camera movement and voiceovers.")
+st.caption("Fast, free, instant animated storyboards with dynamic camera movement and clean voiceovers.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -327,7 +327,8 @@ if st.button("Spark Story 🚀", type="primary"):
                         
                         audio_fp = None
                         if enable_audio:
-                            audio_fp = generate_speech(f"{speaker} says, {speech_text}", voice_accent)
+                            # Send pure speech_text to gTTS (without 'speaker says')
+                            audio_fp = generate_speech(speech_text, voice_accent)
 
                         video_bytes, temp_file_path = build_motion_video(
                             images_bytes_list[global_idx], 
