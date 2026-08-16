@@ -32,20 +32,20 @@ except ImportError:
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI Engine")
-st.caption("ToonBees-Style Animation Studio: Enforced Character Consistency, Motion, Voice & BGM.")
+st.caption("ToonBees-Style Animation Studio: Enforced Visual Quality, Character Blueprint & Audio Mixing.")
 
 class Scene(BaseModel):
     scene_number: int
     character_speaking: str = Field(description="Name of the character speaking or Narrator")
     dialogue: str = Field(description="Spoken dialogue or narrative commentary.")
-    image_prompt: str = Field(description="Detailed visual prompt highlighting action, framing, and environment")
+    image_prompt: str = Field(description="Detailed visual prompt depicting background setting, character actions, and environmental details.")
     action_description: str = Field(description="Brief explanation of scene action")
 
 class AnimationStoryboard(BaseModel):
     title: str
     target_audience: str
     main_character_name: str = Field(description="Name of the primary character")
-    main_character_design: str = Field(description="Very detailed physical appearance of main character (colors, clothes, distinct features) to maintain consistency across scenes")
+    main_character_design: str = Field(description="Detailed physical traits (hair, clothes, colors) of the main character to enforce visual consistency.")
     scenes: list[Scene]
 
 secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -108,25 +108,36 @@ def clean_text(text):
 
 def fetch_single_image(args):
     prompt_text, index = args
-    clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
+    # Clean text to prevent bad URL escaping in image engine
+    clean_p = re.sub(r'[^a-zA-Z0-9\s,-]', '', prompt_text)
+    clean_p = ' '.join(clean_p.split())[:300]
+    
     seed = random.randint(1000, 99999)
     
-    urls = [
-        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}",
-        f"https://picsum.photos/seed/{seed}/{VID_WIDTH}/{VID_HEIGHT}"
-    ]
+    # Target high-quality generation endpoint directly
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}&model=flux"
     
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=12) as response:
-                img_bytes = response.read()
-                if len(img_bytes) > 2000:
-                    return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
-        except Exception:
-            continue
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            img_bytes = response.read()
+            if len(img_bytes) > 5000:
+                return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+    except Exception:
+        pass
 
-    return None, f"https://via.placeholder.com/{VID_WIDTH}x{VID_HEIGHT}.png?text=Image+Unavailable"
+    # Fallback to standard endpoint if flux engine times out
+    try:
+        fallback_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}"
+        req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=12) as response:
+            img_bytes = response.read()
+            if len(img_bytes) > 2000:
+                return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+    except Exception:
+        pass
+
+    return None, f"https://via.placeholder.com/{VID_WIDTH}x{VID_HEIGHT}.png?text=Image+Rendering+Issue"
 
 def generate_speech(text, accent_key):
     try:
@@ -338,13 +349,12 @@ if st.button("Spark Story 🚀", type="primary"):
 
             for model_name in fallback_models:
                 try:
-                    story_status.write(f"🧠 Architecting character blueprint and script ({model_name})...")
+                    story_status.write(f"🧠 Drafting script & scene visuals ({model_name})...")
                     prompt_query = (
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL REQUIREMENT: Create a hyper-detailed physical description for 'main_character_design' "
-                        f"including exact clothing, color palette, hair style, facial structure, and visual traits."
+                        f"REQUIREMENT: Provide concise 'image_prompt' focus primarily on setting, main action, and subject."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -363,18 +373,14 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
             char_design = data.get("main_character_design", "")
-            char_name = data.get("main_character_name", "Main Character")
+            char_name = data.get("main_character_name", "Character")
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} character-consistent scenes with motion...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} art-consistent scenes...")
 
-            # ENFORCED CONSISTENCY: Every image prompt now fuses the exact character blueprint
+            # Enforce clean visual structure
             prompts = []
             for s in data["scenes"]:
-                scene_p = (
-                    f"Character design reference for {char_name}: {char_design}. "
-                    f"Scene visual: {s['image_prompt']}. "
-                    f"In style of {art_style}, 8k resolution, cinematic lighting, master masterpiece animation style."
-                )
+                scene_p = f"{art_style} digital art of {s['image_prompt']}, depicting {char_name} ({char_design}), high detailed background, vibrant colorful scene"
                 prompts.append(scene_p)
             
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -383,7 +389,7 @@ if st.button("Spark Story 🚀", type="primary"):
             images_bytes_list = [r[0] for r in raw_image_results]
             images_src_list = [r[1] for r in raw_image_results]
 
-            st.success(f"Storyboard: **{data['title']}** | Character Blueprint: *{char_name} ({char_design[:70]}...)*")
+            st.success(f"Storyboard: **{data['title']}** | Style: *{art_style}*")
 
             st.subheader("🎬 Storyboard Scenes with Motion & Audio")
             
