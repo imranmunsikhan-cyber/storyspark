@@ -16,17 +16,23 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+    from moviepy import (
+        ImageClip, AudioFileClip, VideoFileClip, TextClip, 
+        CompositeVideoClip, CompositeAudioClip, concatenate_videoclips, afx
+    )
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+        from moviepy.editor import (
+            ImageClip, AudioFileClip, VideoFileClip, TextClip, 
+            CompositeVideoClip, CompositeAudioClip, concatenate_videoclips, afx
+        )
     except ImportError:
-        ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips = None, None, None, None, None
+        ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, CompositeAudioClip, concatenate_videoclips, afx = [None] * 8
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("ToonBees-Style Automated Animation Engine: Dynamic Camera Motion, Voice, & Burned-In Subtitles.")
+st.caption("ToonBees-Style Automated Animation Engine: Motion, Voice, Subtitles & Background Music.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -55,7 +61,7 @@ with st.sidebar:
         ["16:9 Landscape (YouTube)", "9:16 Vertical (TikTok / Reels)"]
     )
     
-    st.subheader("🎨 Art & Voice Settings")
+    st.subheader("🎨 Art & Audio Settings")
     art_style = st.selectbox(
         "Choose Animation Style:",
         ["Vibrant Pixar 3D", "Classic Anime / Studio Ghibli", "Papercraft / Claymation", "Retro Comic Book", "Photorealistic Cinematic"]
@@ -68,6 +74,7 @@ with st.sidebar:
     
     enable_audio = st.checkbox("Generate Voice & Motion Clips 🎙️🎬", value=True)
     enable_subtitles = st.checkbox("Burn-In Dynamic Subtitles 💬", value=True)
+    enable_bgm = st.checkbox("Add Background Music Track 🎵", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
@@ -86,6 +93,9 @@ ACCENT_MAP = {
     "Australian (en-AU)": ("en", "com.au"),
     "Indian (en-IN)": ("en", "co.in")
 }
+
+# Ambient instrumental audio source
+BGM_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
 
 def clean_text(text):
     if not text:
@@ -130,6 +140,17 @@ def generate_speech(text, accent_key):
         tts.write_to_fp(fp)
         fp.seek(0)
         return fp
+    except Exception:
+        return None
+
+def fetch_bgm_file():
+    try:
+        req = urllib.request.Request(BGM_URL, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            bgm_bytes = response.read()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                f.write(bgm_bytes)
+                return f.name
     except Exception:
         return None
 
@@ -246,13 +267,37 @@ def build_motion_video(img_bytes, audio_bytes, subtitle_text="", scene_idx=0):
     except Exception:
         return None, None
 
-def merge_all_scenes(file_paths):
+def merge_all_scenes(file_paths, include_bgm=False):
     try:
         clips = [VideoFileClip(p) for p in file_paths if os.path.exists(p)]
         if not clips:
             return None
         
         final_clip = concatenate_videoclips(clips, method="compose")
+        bgm_path = fetch_bgm_file() if include_bgm else None
+
+        if bgm_path and os.path.exists(bgm_path) and CompositeAudioClip:
+            try:
+                bgm_audio = AudioFileClip(bgm_path)
+                bgm_audio = bgm_audio.subclip(0, min(bgm_audio.duration, final_clip.duration))
+                
+                if hasattr(bgm_audio, "volumex"):
+                    bgm_audio = bgm_audio.volumex(0.15)
+                elif hasattr(afx, "volumex"):
+                    bgm_audio = afx.volumex(bgm_audio, 0.15)
+
+                if final_clip.audio:
+                    combined_audio = CompositeAudioClip([final_clip.audio, bgm_audio])
+                else:
+                    combined_audio = bgm_audio
+
+                if hasattr(final_clip, "with_audio"):
+                    final_clip = final_clip.with_audio(combined_audio)
+                else:
+                    final_clip = final_clip.set_audio(combined_audio)
+            except Exception:
+                pass
+
         output_full_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         
         final_clip.write_videofile(
@@ -269,6 +314,8 @@ def merge_all_scenes(file_paths):
 
         if os.path.exists(output_full_path):
             os.remove(output_full_path)
+        if bgm_path and os.path.exists(bgm_path):
+            os.remove(bgm_path)
             
         return full_bytes
     except Exception:
@@ -367,8 +414,8 @@ if st.button("Spark Story 🚀", type="primary"):
                             st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
 
             if len(scene_temp_files) > 1:
-                story_status.write("🎞️ Stitching complete movie file...")
-                full_movie_bytes = merge_all_scenes(scene_temp_files)
+                story_status.write("🎞️ Stitching complete movie with background music...")
+                full_movie_bytes = merge_all_scenes(scene_temp_files, include_bgm=enable_bgm)
                 if full_movie_bytes:
                     st.divider()
                     st.subheader("📥 Export Complete Movie")
