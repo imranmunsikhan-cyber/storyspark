@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from gtts import gTTS
+from PIL import Image, ImageDraw
 
 try:
     from moviepy import (
@@ -32,7 +33,7 @@ except ImportError:
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI Engine")
-st.caption("ToonBees-Style Animation Studio: Enforced Motion Video, Character Blueprint & Audio Mixing.")
+st.caption("ToonBees-Style Animation Studio: Enforced Video Generation & Dynamic Fallbacks.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -106,24 +107,33 @@ def clean_text(text):
         text = text.replace(k, v)
     return text.encode('ascii', 'ignore').decode('ascii')
 
+def create_fallback_image_bytes(text_label="Scene Visual"):
+    img = Image.new('RGB', (VID_WIDTH, VID_HEIGHT), color=(30, 35, 45))
+    draw = ImageDraw.Draw(img)
+    draw.text((VID_WIDTH // 3, VID_HEIGHT // 2), f"Rendering Scene: {text_label[:30]}", fill=(255, 255, 255))
+    buf = BytesIO()
+    img.save(buf, format='JPEG')
+    return buf.getvalue()
+
 def fetch_single_image(args):
     prompt_text, index = args
     clean_p = re.sub(r'[^a-zA-Z0-9\s,-]', '', prompt_text)
-    clean_p = ' '.join(clean_p.split())[:200]
-    seed = random.randint(1000, 99999)
+    clean_p = ' '.join(clean_p.split())[:180]
     
-    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}"
-    
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        with urllib.request.urlopen(req, timeout=20) as response:
-            img_bytes = response.read()
-            if len(img_bytes) > 2000:
-                return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
-    except Exception:
-        pass
+    for attempt in range(3):
+        seed = random.randint(1000, 99999)
+        url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_p)}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+            with urllib.request.urlopen(req, timeout=15) as response:
+                img_bytes = response.read()
+                if len(img_bytes) > 2000:
+                    return img_bytes, f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+        except Exception:
+            time.sleep(1)
 
-    return None, f"https://via.placeholder.com/{VID_WIDTH}x{VID_HEIGHT}.png?text=Image+Rendering+Issue"
+    fallback_b = create_fallback_image_bytes(prompt_text)
+    return fallback_b, f"data:image/jpeg;base64,{base64.b64encode(fallback_b).decode('utf-8')}"
 
 def generate_speech_file(text, accent_key):
     try:
@@ -163,8 +173,11 @@ def build_motion_video(img_bytes, audio_path, subtitle_text="", scene_idx=0):
         audio_clip = None
 
         if audio_path and os.path.exists(audio_path):
-            audio_clip = AudioFileClip(audio_path)
-            duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
+            try:
+                audio_clip = AudioFileClip(audio_path)
+                duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
+            except Exception:
+                audio_clip = None
 
         base_clip = ImageClip(img_path)
 
@@ -202,7 +215,6 @@ def build_motion_video(img_bytes, audio_path, subtitle_text="", scene_idx=0):
                 import cv2
                 return cv2.resize(cropped, (w, h))
             except ImportError:
-                from PIL import Image
                 img = Image.fromarray(cropped)
                 return __import__("numpy").array(img.resize((w, h), Image.Resampling.LANCZOS))
 
@@ -255,7 +267,10 @@ def build_motion_video(img_bytes, audio_path, subtitle_text="", scene_idx=0):
 
         for p in [img_path, audio_path]:
             if p and os.path.exists(p):
-                os.remove(p)
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
         return video_bytes, output_path
     except Exception:
@@ -362,11 +377,11 @@ if st.button("Spark Story 🚀", type="primary"):
 
             prompts = []
             for s in data["scenes"]:
-                scene_p = f"{art_style} style, {s['image_prompt']}, {char_name} {char_design}, 8k resolution animation"
+                scene_p = f"{art_style} style, {s['image_prompt']}, {char_name} {char_design}, high detailed animation"
                 prompts.append(scene_p)
             
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                raw_image_results = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
+            # Fetch sequentially to avoid rate-limiting image APIs
+            raw_image_results = [fetch_single_image((p, i)) for i, p in enumerate(prompts)]
 
             images_bytes_list = [r[0] for r in raw_image_results]
             images_src_list = [r[1] for r in raw_image_results]
@@ -429,7 +444,10 @@ if st.button("Spark Story 🚀", type="primary"):
 
             for p in scene_temp_files:
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
 
             story_status.update(label="Animated Storyboard Complete!", state="complete", expanded=False)
 
