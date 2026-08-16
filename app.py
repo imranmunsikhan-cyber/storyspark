@@ -16,16 +16,15 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip
+    from moviepy import ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip
+        from moviepy.editor import ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
     except ImportError:
-        ImageClip, AudioFileClip = None, None
+        ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips = None, None, None, None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
-# Inject CSS for smooth Ken Burns camera pan-and-zoom directly on video renders
 st.markdown("""
 <style>
     .stVideo video {
@@ -40,7 +39,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("✨ StorySpark AI")
-st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, and motion video generation.")
+st.caption("Turn simple ideas into complete animated storyboards with AI visuals, voice, captions, and full video export.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -62,20 +61,45 @@ with st.sidebar:
     api_key = st.text_input("Gemini API Key", value=secret_key, type="password")
     
     st.subheader("⚙️ Storyboard Controls")
-    num_scenes = st.slider("Number of Scenes (if not specified in text):", min_value=3, max_value=6, value=5)
+    num_scenes = st.slider("Number of Scenes:", min_value=3, max_value=6, value=5)
     
-    st.subheader("🎨 Art Style Settings")
+    aspect_ratio = st.selectbox(
+        "📐 Aspect Ratio:",
+        ["16:9 Landscape (YouTube)", "9:16 Vertical (TikTok / Reels)"]
+    )
+    
+    st.subheader("🎨 Art & Voice Settings")
     art_style = st.selectbox(
         "Choose Animation Style:",
         ["Vibrant Pixar 3D", "Classic Anime / Studio Ghibli", "Papercraft / Claymation", "Retro Comic Book", "Photorealistic Cinematic"]
     )
+    
+    voice_accent = st.selectbox(
+        "🎙️ Narrator Accent / Language:",
+        ["American (en-US)", "British (en-GB)", "Australian (en-AU)", "Indian (en-IN)"]
+    )
+    
     enable_audio = st.checkbox("Generate Voice & Video Clips 🎙️🎬", value=True)
+    enable_subtitles = st.checkbox("Add On-Screen Subtitles 💬", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
-    height=200,
+    height=180,
     placeholder="Paste your story idea or full scene-by-scene outline here..."
 )
+
+# Parse dimensions based on aspect ratio toggle
+if "9:16" in aspect_ratio:
+    VID_WIDTH, VID_HEIGHT = 720, 1280
+else:
+    VID_WIDTH, VID_HEIGHT = 1280, 720
+
+ACCENT_MAP = {
+    "American (en-US)": ("en", "com"),
+    "British (en-GB)": ("en", "co.uk"),
+    "Australian (en-AU)": ("en", "com.au"),
+    "Indian (en-IN)": ("en", "co.in")
+}
 
 def clean_text(text):
     if not text:
@@ -91,10 +115,9 @@ def fetch_single_image(args):
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
     seed = random.randint(1000, 99999)
     
-    # Exact 1280x720 dimension enforcing for clean H.264 encoding
     urls = [
-        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width=1280&height=720&nologo=true&seed={seed}",
-        f"https://picsum.photos/seed/{seed}/1280/720"
+        f"https://image.pollinations.ai/prompt/{urllib.parse.quote(clean_prompt.strip())}?width={VID_WIDTH}&height={VID_HEIGHT}&nologo=true&seed={seed}",
+        f"https://picsum.photos/seed/{seed}/{VID_WIDTH}/{VID_HEIGHT}"
     ]
     
     for url in urls:
@@ -107,14 +130,16 @@ def fetch_single_image(args):
         except Exception:
             continue
 
-    return None, "https://via.placeholder.com/1280x720.png?text=Image+Unavailable"
+    return None, f"https://via.placeholder.com/{VID_WIDTH}x{VID_HEIGHT}.png?text=Image+Unavailable"
 
-def generate_speech(text):
+def generate_speech(text, accent_key):
     try:
         safe_speech_text = clean_text(text)
         if not safe_speech_text.strip():
             return None
-        tts = gTTS(text=safe_speech_text, lang='en', slow=False)
+        
+        lang_code, tld = ACCENT_MAP.get(accent_key, ("en", "com"))
+        tts = gTTS(text=safe_speech_text, lang=lang_code, tld=tld, slow=False)
         fp = BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)
@@ -122,9 +147,9 @@ def generate_speech(text):
     except Exception:
         return None
 
-def build_motion_video(img_bytes, audio_bytes):
+def build_motion_video(img_bytes, audio_bytes, dialogue_text=""):
     if not ImageClip or not img_bytes or not audio_bytes:
-        return None
+        return None, None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
             img_file.write(img_bytes)
@@ -150,8 +175,6 @@ def build_motion_video(img_bytes, audio_bytes):
             video_clip = video_clip.set_audio(audio_clip)
 
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-        
-        # Clean 1280x720 encoding with standard H.264 yuv420p color space
         video_clip.write_videofile(
             output_path, 
             fps=24, 
@@ -164,11 +187,39 @@ def build_motion_video(img_bytes, audio_bytes):
         with open(output_path, "rb") as f:
             video_bytes = f.read()
 
-        for p in [img_path, audio_path, output_path]:
+        for p in [img_path, audio_path]:
             if os.path.exists(p):
                 os.remove(p)
 
-        return video_bytes
+        return video_bytes, output_path
+    except Exception:
+        return None, None
+
+def merge_all_scenes(file_paths):
+    try:
+        clips = [VideoFileClip(p) for p in file_paths if os.path.exists(p)]
+        if not clips:
+            return None
+        
+        final_clip = concatenate_videoclips(clips, method="compose")
+        output_full_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        
+        final_clip.write_videofile(
+            output_full_path,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            ffmpeg_params=["-pix_fmt", "yuv420p"],
+            logger=None
+        )
+        
+        with open(output_full_path, "rb") as f:
+            full_bytes = f.read()
+
+        if os.path.exists(output_full_path):
+            os.remove(output_full_path)
+            
+        return full_bytes
     except Exception:
         return None
 
@@ -213,7 +264,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} crisp video scenes...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} scenes in {aspect_ratio}...")
             prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -224,9 +275,11 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
-            st.subheader("🎬 Storyboard Scenes with Motion Video")
+            st.subheader("🎬 Storyboard Scenes")
             
-            num_cols = 3
+            scene_temp_files = []
+            num_cols = 3 if "16:9" in aspect_ratio else 2
+            
             for i in range(0, len(data["scenes"]), num_cols):
                 cols = st.columns(num_cols)
                 scene_group = data["scenes"][i:i+num_cols]
@@ -240,16 +293,43 @@ if st.button("Spark Story 🚀", type="primary"):
                         
                         audio_fp = None
                         if enable_audio and scene['dialogue']:
-                            audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}")
+                            audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}", voice_accent)
 
-                        video_bytes = build_motion_video(images_bytes_list[global_idx], audio_fp) if audio_fp and images_bytes_list[global_idx] else None
+                        video_bytes, temp_file_path = build_motion_video(
+                            images_bytes_list[global_idx], 
+                            audio_fp, 
+                            dialogue_text=scene['dialogue'] if enable_subtitles else ""
+                        ) if audio_fp and images_bytes_list[global_idx] else (None, None)
                         
+                        if temp_file_path:
+                            scene_temp_files.append(temp_file_path)
+
                         if video_bytes:
                             st.video(video_bytes)
                         else:
                             if audio_fp:
                                 st.audio(audio_fp, format='audio/mp3')
                             st.image(images_src_list[global_idx], caption=f"Scene {scene['scene_number']} Visual", use_container_width=True)
+
+            # Generate Full Downloadable Movie File
+            if len(scene_temp_files) > 1:
+                story_status.write("🎞️ Stitching complete movie file...")
+                full_movie_bytes = merge_all_scenes(scene_temp_files)
+                if full_movie_bytes:
+                    st.divider()
+                    st.subheader("📥 Export Complete Movie")
+                    st.download_button(
+                        label="⬇️ Download Full Story Video (.MP4)",
+                        data=full_movie_bytes,
+                        file_name=f"{re.sub(r'[^a-zA-Z0-9]', '_', data['title'])}.mp4",
+                        mime="video/mp4",
+                        type="primary"
+                    )
+
+            # Cleanup temp scene files
+            for p in scene_temp_files:
+                if os.path.exists(p):
+                    os.remove(p)
 
             story_status.update(label="Animated Storyboard Complete!", state="complete", expanded=False)
 
