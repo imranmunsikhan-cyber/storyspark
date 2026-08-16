@@ -6,6 +6,7 @@ import time
 import urllib.parse
 import urllib.request
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -61,13 +62,13 @@ def clean_text(text):
         text = text.replace(k, v)
     return text.encode('ascii', 'ignore').decode('ascii')
 
-def fetch_single_image(prompt_text, index):
+def fetch_single_image(args):
+    prompt_text, index = args
     clean_prompt = re.sub(r'[^\w\s,-]', '', prompt_text)
-    # Stagger requests slightly longer to prevent rate limiting on 5+ images
-    time.sleep(index * 0.8)
-    
-    seed = random.randint(1000, 999999)
+    seed = random.randint(10000, 999999)
     encoded_prompt = urllib.parse.quote(clean_prompt.strip())
+    
+    # Primary URL with Pollinations
     direct_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true&seed={seed}"
     
     req = urllib.request.Request(
@@ -75,15 +76,16 @@ def fetch_single_image(prompt_text, index):
         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     )
     
-    try:
-        with urllib.request.urlopen(req, timeout=8) as response:
-            image_data = response.read()
-            if len(image_data) > 2000:
-                return f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
-    except Exception:
-        pass
+    for attempt in range(2):
+        try:
+            time.sleep(attempt * 0.5)
+            with urllib.request.urlopen(req, timeout=12) as response:
+                image_data = response.read()
+                if len(image_data) > 2000:
+                    return f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
+        except Exception:
+            continue
             
-    # Always return direct URL if base64 download hits timeout
     return direct_url
 
 def generate_speech(text):
@@ -157,7 +159,7 @@ if st.button("Spark Story 🚀", type="primary"):
                         f"If the user input contains a multi-scene breakdown (e.g., Scene 1, Scene 2...), follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL FOR IMAGES: In every scene's image_prompt, describe the full environment/setting background clearly (e.g., hospital room, dusty attic, cafeteria) along with character actions, so images show the complete scene instead of just close-up portraits."
+                        f"CRITICAL FOR IMAGES: In every scene's image_prompt, describe the full environment/setting background clearly along with character actions."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -177,13 +179,12 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes ({art_style})...")
-            prompts = [f"{s['image_prompt']}, detailed environment background, widescreen cinematic composition, in style of {art_style}" for s in data["scenes"]]
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} visual scenes concurrently...")
+            prompts = [f"{s['image_prompt']}, detailed background setting, widescreen cinematic composition, in style of {art_style}" for s in data["scenes"]]
             
-            image_sources = []
-            for idx, p in enumerate(prompts):
-                story_status.write(f"🎨 Fetching scene {idx+1} image...")
-                image_sources.append(fetch_single_image(p, idx))
+            # Fetch images in parallel using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                image_sources = list(executor.map(fetch_single_image, [(p, i) for i, p in enumerate(prompts)]))
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
             
