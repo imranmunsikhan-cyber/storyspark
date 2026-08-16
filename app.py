@@ -16,17 +16,17 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips
+    from moviepy import ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips
+        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
     except ImportError:
-        ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips = None, None, None, None
+        ImageClip, AudioFileClip, VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips = None, None, None, None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
 st.title("✨ StorySpark AI")
-st.caption("Fast, free, instant animated storyboards with dynamic camera movement and clean voiceovers.")
+st.caption("ToonBees-Style Automated Animation Engine: Dynamic Camera Motion, Voice, & Burned-In Subtitles.")
 
 class Scene(BaseModel):
     scene_number: int
@@ -67,6 +67,7 @@ with st.sidebar:
     )
     
     enable_audio = st.checkbox("Generate Voice & Motion Clips 🎙️🎬", value=True)
+    enable_subtitles = st.checkbox("Burn-In Dynamic Subtitles 💬", value=True)
 
 user_concept = st.text_area(
     "What is your story idea?",
@@ -132,7 +133,7 @@ def generate_speech(text, accent_key):
     except Exception:
         return None
 
-def build_motion_video(img_bytes, audio_bytes, scene_idx=0):
+def build_motion_video(img_bytes, audio_bytes, subtitle_text="", scene_idx=0):
     if not ImageClip or not img_bytes:
         return None, None
     try:
@@ -196,6 +197,25 @@ def build_motion_video(img_bytes, audio_bytes, scene_idx=0):
             motion_clip = clip.fl(lambda gf, t: pan_and_scan_transform(gf, t))
         else:
             motion_clip = clip
+
+        if enable_subtitles and subtitle_text.strip() and TextClip and CompositeVideoClip:
+            try:
+                txt_clip = TextClip(
+                    subtitle_text,
+                    fontsize=28 if "16:9" in aspect_ratio else 34,
+                    color='white',
+                    bg_color='black',
+                    size=(int(VID_WIDTH * 0.85), None),
+                    method='caption'
+                )
+                if hasattr(txt_clip, "with_duration"):
+                    txt_clip = txt_clip.with_duration(duration).with_position(('center', int(VID_HEIGHT * 0.82)))
+                else:
+                    txt_clip = txt_clip.set_duration(duration).set_position(('center', int(VID_HEIGHT * 0.82)))
+                
+                motion_clip = CompositeVideoClip([motion_clip, txt_clip])
+            except Exception:
+                pass
 
         if audio_path and 'audio_clip' in locals():
             if hasattr(motion_clip, "with_audio"):
@@ -327,12 +347,12 @@ if st.button("Spark Story 🚀", type="primary"):
                         
                         audio_fp = None
                         if enable_audio:
-                            # Send pure speech_text to gTTS (without 'speaker says')
                             audio_fp = generate_speech(speech_text, voice_accent)
 
                         video_bytes, temp_file_path = build_motion_video(
                             images_bytes_list[global_idx], 
                             audio_fp,
+                            subtitle_text=speech_text,
                             scene_idx=global_idx
                         )
                         
