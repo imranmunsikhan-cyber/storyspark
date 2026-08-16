@@ -16,12 +16,12 @@ from pydantic import BaseModel, Field
 from gtts import gTTS
 
 try:
-    from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
+    from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips
 except ImportError:
     try:
-        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
+        from moviepy.editor import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips
     except ImportError:
-        ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, vfx = None, None, None, None, None
+        ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips = None, None, None, None
 
 st.set_page_config(page_title="StorySpark AI", page_icon="✨", layout="wide")
 
@@ -30,8 +30,8 @@ st.caption("Turn simple ideas into complete animated storyboards with AI visuals
 
 class Scene(BaseModel):
     scene_number: int
-    character_speaking: str = Field(description="Name of the character speaking")
-    dialogue: str = Field(description="The spoken dialogue")
+    character_speaking: str = Field(description="Name of the character speaking or Narrator")
+    dialogue: str = Field(description="Spoken dialogue or narrative commentary. MUST NOT BE EMPTY.")
     image_prompt: str = Field(description="Detailed visual prompt highlighting background setting and character actions")
     action_description: str = Field(description="Brief explanation of scene action")
 
@@ -121,7 +121,7 @@ def generate_speech(text, accent_key):
     try:
         safe_speech_text = clean_text(text)
         if not safe_speech_text.strip():
-            return None
+            safe_speech_text = "Observing the scene carefully."
         
         lang_code, tld = ACCENT_MAP.get(accent_key, ("en", "com"))
         tts = gTTS(text=safe_speech_text, lang=lang_code, tld=tld, slow=False)
@@ -133,32 +133,33 @@ def generate_speech(text, accent_key):
         return None
 
 def build_motion_video(img_bytes, audio_bytes):
-    if not ImageClip or not img_bytes or not audio_bytes:
+    if not ImageClip or not img_bytes:
         return None, None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as img_file:
             img_file.write(img_bytes)
             img_path = img_file.name
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
-            audio_file.write(audio_bytes.getvalue())
-            audio_path = audio_file.name
+        audio_path = None
+        duration = 4.0
+        
+        if audio_bytes:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as audio_file:
+                audio_file.write(audio_bytes.getvalue())
+                audio_path = audio_file.name
+            audio_clip = AudioFileClip(audio_path)
+            duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
 
-        audio_clip = AudioFileClip(audio_path)
         base_clip = ImageClip(img_path)
-
-        duration = audio_clip.duration if audio_clip.duration > 0 else 4.0
 
         if hasattr(base_clip, "with_duration"):
             clip = base_clip.with_duration(duration)
         else:
             clip = base_clip.set_duration(duration)
 
-        # Active pixel transformations across time (Ken Burns camera zoom)
         def zoom_transform(get_frame, t):
             frame = get_frame(t)
-            # Apply dynamic zoom scaling over time duration
-            scale = 1.0 + 0.15 * (t / duration)
+            scale = 1.0 + 0.12 * (t / duration)
             h, w, _ = frame.shape
             nh, nw = int(h / scale), int(w / scale)
             sy, sx = (h - nh) // 2, (w - nw) // 2
@@ -179,17 +180,20 @@ def build_motion_video(img_bytes, audio_bytes):
         else:
             motion_clip = clip
 
-        if hasattr(motion_clip, "with_audio"):
-            video_clip = motion_clip.with_audio(audio_clip)
+        if audio_path and 'audio_clip' in locals():
+            if hasattr(motion_clip, "with_audio"):
+                video_clip = motion_clip.with_audio(audio_clip)
+            else:
+                video_clip = motion_clip.set_audio(audio_clip)
         else:
-            video_clip = motion_clip.set_audio(audio_clip)
+            video_clip = motion_clip
 
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         video_clip.write_videofile(
             output_path, 
             fps=24, 
             codec="libx264", 
-            audio_codec="aac", 
+            audio_codec="aac" if audio_path else None, 
             ffmpeg_params=["-pix_fmt", "yuv420p"],
             logger=None
         )
@@ -198,7 +202,7 @@ def build_motion_video(img_bytes, audio_bytes):
             video_bytes = f.read()
 
         for p in [img_path, audio_path]:
-            if os.path.exists(p):
+            if p and os.path.exists(p):
                 os.remove(p)
 
         return video_bytes, output_path
@@ -255,7 +259,7 @@ if st.button("Spark Story 🚀", type="primary"):
                         f"If the user input contains a multi-scene breakdown, follow that EXACT scene outline, setting, action, and scene count strictly. "
                         f"Otherwise, create EXACTLY {target_count} scenes for: {user_concept}.\n"
                         f"Aesthetic target: {art_style}.\n"
-                        f"CRITICAL FOR IMAGES: Describe environment setting and character actions clearly."
+                        f"CRITICAL: Always generate dialogue or spoken narration text for EVERY scene. Do not leave dialogue empty."
                     )
                     response = client.models.generate_content(
                         model=model_name,
@@ -274,7 +278,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             data = json.loads(response.text)
 
-            story_status.write(f"🎨 Rendering {len(data['scenes'])} motion video scenes...")
+            story_status.write(f"🎨 Rendering {len(data['scenes'])} motion video scenes with voice...")
             prompts = [f"{s['image_prompt']}, detailed background setting, cinematic lighting, in style of {art_style}" for s in data["scenes"]]
             
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -285,7 +289,7 @@ if st.button("Spark Story 🚀", type="primary"):
 
             st.success(f"Storyboard: **{data['title']}** (Audience: {data['target_audience']}) | Scenes: {len(data['scenes'])}")
 
-            st.subheader("🎬 Storyboard Scenes with Camera Motion")
+            st.subheader("🎬 Storyboard Scenes with Motion Video & Audio")
             
             scene_temp_files = []
             num_cols = 3 if "16:9" in aspect_ratio else 2
@@ -297,18 +301,21 @@ if st.button("Spark Story 🚀", type="primary"):
                 for idx, scene in enumerate(scene_group):
                     global_idx = i + idx
                     with cols[idx]:
+                        speaker = scene['character_speaking'] if scene['character_speaking'] else "Narrator"
+                        speech_text = scene['dialogue'] if scene['dialogue'].strip() else scene['action_description']
+                        
                         st.markdown(f"### Scene {scene['scene_number']}")
                         st.write(f"**Action:** {scene['action_description']}")
-                        st.write(f"🗣️ **{scene['character_speaking']}:** \"{scene['dialogue']}\"")
+                        st.write(f"🗣️ **{speaker}:** \"{speech_text}\"")
                         
                         audio_fp = None
-                        if enable_audio and scene['dialogue']:
-                            audio_fp = generate_speech(f"{scene['character_speaking']} says, {scene['dialogue']}", voice_accent)
+                        if enable_audio:
+                            audio_fp = generate_speech(f"{speaker} says, {speech_text}", voice_accent)
 
                         video_bytes, temp_file_path = build_motion_video(
                             images_bytes_list[global_idx], 
                             audio_fp
-                        ) if audio_fp and images_bytes_list[global_idx] else (None, None)
+                        )
                         
                         if temp_file_path:
                             scene_temp_files.append(temp_file_path)
